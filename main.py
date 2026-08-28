@@ -5,14 +5,14 @@ package.domain = br.com.fingestor
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,ttf
 version = 0.1
-requirements = python3,kivy==2.3.0,kivymd==1.2.0,pillow
+requirements = python3,kivy==2.3.1,kivymd==1.2.0,pillow
 orientation = portrait
 fullscreen = 0
 
 # Android build configuration
 android.api = 35
 android.minapi = 21
-android.archs = arm64-v8a,armeabi-v7a
+android.archs = arm64-v8a
 android.accept_sdk_license = True
 
 # AndroidX is required for the FileProvider used to share the receipt (PDF/PNG)

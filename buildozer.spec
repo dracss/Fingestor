@@ -1,27 +1,51 @@
-[app]
-title = FinGestor
-package.name = fingestor
-package.domain = br.com.fingestor
-source.dir = .
-source.include_exts = py,png,jpg,kv,atlas,json,ttf
-version = 0.1
-requirements = python3,kivy==2.3.1,kivymd==1.2.0,pillow
-orientation = portrait
-fullscreen = 0
+name: Build Android APK
 
-# Android build configuration
-android.api = 35
-android.minapi = 21
-android.archs = arm64-v8a
-android.accept_sdk_license = True
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
 
-# AndroidX is required for the FileProvider used to share the receipt (PDF/PNG)
-android.enable_androidx = True
+jobs:
+  build-android:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-# INTERNET is optional (reserved for future cloud sync). Saving/sharing files
-# uses the app-private storage + FileProvider and needs no runtime permission.
-android.permissions = INTERNET
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-[buildozer]
-log_level = 2
-warn_on_root = 0
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ccache git zip unzip \
+            openjdk-17-jdk autoconf automake libtool libtool-bin \
+            pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev \
+            libtinfo5 cmake libffi-dev libssl-dev
+
+      - name: Install Buildozer and Cython
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install "cython<3.1" buildozer
+
+      - name: Cache Buildozer global directory
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: buildozer-global-${{ hashFiles('buildozer.spec') }}
+          restore-keys: buildozer-global-
+
+      - name: Build APK (debug)
+        run: |
+          export BUILDOZER_WARN_ON_ROOT=0
+          yes | buildozer android debug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: bin/*.apk
+          if-no-files-found: error
