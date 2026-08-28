@@ -1,26 +1,27 @@
-name: Build Android APK
+[app]
+title = FinGestor
+package.name = fingestor
+package.domain = br.com.fingestor
+source.dir = .
+source.include_exts = py,png,jpg,kv,atlas,json,ttf
+version = 0.1
+requirements = python3,kivy==2.3.0,kivymd==1.2.0,pillow
+orientation = portrait
+fullscreen = 0
 
-on:
-  push:
-    branches: [ main, master ]
-  workflow_dispatch:
+# Android build configuration
+android.api = 35
+android.minapi = 21
+android.archs = arm64-v8a,armeabi-v7a
+android.accept_sdk_license = True
 
-jobs:
-  build-android:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+# AndroidX is required for the FileProvider used to share the receipt (PDF/PNG)
+android.enable_androidx = True
 
-      - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          command: buildozer android debug
-          buildozer_version: stable
+# INTERNET is optional (reserved for future cloud sync). Saving/sharing files
+# uses the app-private storage + FileProvider and needs no runtime permission.
+android.permissions = INTERNET
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: apk
-          path: ${{ steps.buildozer.outputs.filename }}
+[buildozer]
+log_level = 2
+warn_on_root = 0
