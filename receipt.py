@@ -1,675 +1,196 @@
 """
-FinGestor - App de contas a pagar e a receber (MVP).
-UI em KivyMD; dados em SQLite (db.py); cupom em PNG/PDF (receipt.py).
+FinGestor - Geracao de cupom (comprovante) em PNG e PDF usando Pillow,
+e compartilhamento nativo no Android via FileProvider (pyjnius).
 
-Testavel no desktop:  python main.py
-Empacotavel em APK:   via GitHub Actions (.github/workflows) ou `buildozer android debug`
+Nao depende de Kivy. Pillow (PIL) gera a imagem; a mesma imagem e salva
+tambem como PDF (img.save(..., 'PDF')), evitando dependencias extras.
 """
 import os
-from kivy.lang import Builder
-from kivy.clock import Clock
-from kivy.metrics import dp
-from kivy.uix.screenmanager import ScreenManager, Screen
-from kivy.core.window import Window
+from PIL import Image, ImageDraw, ImageFont
 
-from kivymd.app import MDApp
-from kivymd.uix.dialog import MDDialog
-from kivymd.uix.button import MDRaisedButton, MDFlatButton
-from kivymd.uix.textfield import MDTextField
-from kivymd.uix.boxlayout import MDBoxLayout
-from kivymd.uix.list import (
-    ThreeLineListItem, TwoLineListItem, OneLineListItem, IconLeftWidget,
-    TwoLineAvatarIconListItem,
-)
-from kivymd.uix.selectioncontrol import MDCheckbox
-from kivymd.uix.label import MDLabel
-from kivymd.uix.card import MDCard
-from kivymd.uix.snackbar import Snackbar
-from kivy.properties import StringProperty
+from db import fmt_money, STATUS_LABEL
+
+W = 720  # largura do cupom em px
+PAD = 36
 
 
-class StatCard(MDCard):
-    value = StringProperty("")
-    label = StringProperty("")
-
-from db import Database, fmt_money, cents_from_str, STATUS_LABEL, today_iso
-import receipt
-
-# Janela confortavel no desktop (ignorado no Android)
-if os.environ.get("KIVY_BUILD") != "android":
-    Window.size = (400, 720)
-
-
-KV = '''
-#:import dp kivy.metrics.dp
-
-<StatCard>:
-    orientation: "vertical"
-    padding: dp(14)
-    radius: [16,]
-    md_bg_color: app.theme_cls.primary_light
-    size_hint_y: None
-    height: dp(96)
-    value: ""
-    label: ""
-    MDLabel:
-        text: root.value
-        font_style: "H6"
-        bold: True
-        adaptive_height: True
-    MDLabel:
-        text: root.label
-        font_style: "Caption"
-        theme_text_color: "Secondary"
-        adaptive_height: True
-
-ScreenManager:
-    id: sm
-
-    Screen:
-        name: "main"
-        MDBoxLayout:
-            orientation: "vertical"
-            MDTopAppBar:
-                id: top_bar
-                title: "FinGestor"
-                elevation: 2
-                right_action_items: [["refresh", lambda x: app.refresh_all()]]
-            MDBottomNavigation:
-                id: bottom_nav
-                on_switch_tabs: app.on_tab_switch(*args)
-                selected_color_background: app.theme_cls.primary_light
-                text_color_active: app.theme_cls.primary_color
-
-                MDBottomNavigationItem:
-                    name: "tab_home"
-                    text: "Inicio"
-                    icon: "view-dashboard"
-                    ScrollView:
-                        MDBoxLayout:
-                            id: dash_box
-                            orientation: "vertical"
-                            padding: dp(12)
-                            spacing: dp(10)
-                            adaptive_height: True
-
-                MDBottomNavigationItem:
-                    name: "tab_sales"
-                    text: "Vendas"
-                    icon: "cash-multiple"
-                    MDBoxLayout:
-                        orientation: "vertical"
-                        MDBoxLayout:
-                            size_hint_y: None
-                            height: dp(56)
-                            padding: dp(8), 0
-                            spacing: dp(6)
-                            MDLabel:
-                                text: "Filtro:"
-                                size_hint_x: None
-                                width: dp(52)
-                                theme_text_color: "Secondary"
-                            MDRaisedButton:
-                                text: "Todas"
-                                on_release: app.set_sales_filter("ALL")
-                            MDFlatButton:
-                                text: "Em aberto"
-                                on_release: app.set_sales_filter("OPEN")
-                            MDFlatButton:
-                                text: "Atrasadas"
-                                on_release: app.set_sales_filter("OVERDUE")
-                        ScrollView:
-                            MDList:
-                                id: sales_list
-
-                MDBottomNavigationItem:
-                    name: "tab_contacts"
-                    text: "Contatos"
-                    icon: "account-multiple"
-                    MDBoxLayout:
-                        orientation: "vertical"
-                        MDTextField:
-                            id: contact_search
-                            hint_text: "Buscar contato"
-                            mode: "rectangle"
-                            size_hint_x: 0.94
-                            pos_hint: {"center_x": 0.5}
-                            on_text: app.build_contacts()
-                        ScrollView:
-                            MDList:
-                                id: contacts_list
-
-                MDBottomNavigationItem:
-                    name: "tab_settings"
-                    text: "Ajustes"
-                    icon: "cog"
-                    ScrollView:
-                        MDBoxLayout:
-                            orientation: "vertical"
-                            padding: dp(16)
-                            spacing: dp(8)
-                            adaptive_height: True
-                            MDLabel:
-                                text: "Dados da empresa/vendedor"
-                                font_style: "H6"
-                                adaptive_height: True
-                            MDTextField:
-                                id: co_name
-                                hint_text: "Nome"
-                            MDTextField:
-                                id: co_document
-                                hint_text: "CPF / CNPJ"
-                            MDTextField:
-                                id: co_phone
-                                hint_text: "Telefone"
-                            MDTextField:
-                                id: co_email
-                                hint_text: "E-mail"
-                            MDTextField:
-                                id: co_address
-                                hint_text: "Endereco"
-                            MDTextField:
-                                id: co_currency
-                                hint_text: "Simbolo da moeda"
-                                text: "R$"
-                            MDTextField:
-                                id: co_footer
-                                hint_text: "Rodape do cupom"
-                            MDRaisedButton:
-                                text: "Salvar"
-                                pos_hint: {"center_x": 0.5}
-                                on_release: app.save_company()
-
-    Screen:
-        name: "new_sale"
-        MDBoxLayout:
-            orientation: "vertical"
-            MDTopAppBar:
-                title: "Nova venda"
-                left_action_items: [["arrow-left", lambda x: app.go_main("tab_sales")]]
-            ScrollView:
-                MDBoxLayout:
-                    orientation: "vertical"
-                    padding: dp(16)
-                    spacing: dp(10)
-                    adaptive_height: True
-                    MDRaisedButton:
-                        id: ns_client_btn
-                        text: "Selecionar cliente"
-                        on_release: app.open_client_picker()
-                    MDTextField:
-                        id: ns_desc
-                        hint_text: "Descricao (opcional)"
-                    MDTextField:
-                        id: ns_gross
-                        hint_text: "Valor bruto (ex: 150,00)"
-                        input_filter: None
-                    MDBoxLayout:
-                        adaptive_height: True
-                        spacing: dp(8)
-                        MDTextField:
-                            id: ns_discount
-                            hint_text: "Desconto"
-                            text: "0"
-                        MDRaisedButton:
-                            id: ns_disc_type
-                            text: "R$"
-                            on_release: app.toggle_discount_type()
-                            size_hint_x: None
-                            width: dp(64)
-                    MDBoxLayout:
-                        adaptive_height: True
-                        height: dp(48)
-                        MDLabel:
-                            text: "Parcelado?"
-                            adaptive_height: True
-                        MDCheckbox:
-                            id: ns_installment
-                            size_hint: None, None
-                            size: dp(40), dp(40)
-                            on_active: app.on_installment_toggle(self.active)
-                    MDTextField:
-                        id: ns_nparc
-                        hint_text: "Numero de parcelas"
-                        text: "1"
-                        disabled: True
-                        input_filter: "int"
-                    MDLabel:
-                        id: ns_preview
-                        text: ""
-                        theme_text_color: "Secondary"
-                        adaptive_height: True
-                    MDRaisedButton:
-                        text: "Registrar venda"
-                        pos_hint: {"center_x": 0.5}
-                        on_release: app.save_sale()
-
-    Screen:
-        name: "sale_detail"
-        MDBoxLayout:
-            orientation: "vertical"
-            MDTopAppBar:
-                title: "Detalhe da venda"
-                left_action_items: [["arrow-left", lambda x: app.go_main("tab_sales")]]
-            ScrollView:
-                MDBoxLayout:
-                    id: detail_box
-                    orientation: "vertical"
-                    padding: dp(16)
-                    spacing: dp(8)
-                    adaptive_height: True
-'''
-
-
-class FinGestorApp(MDApp):
-    def build(self):
-        self.theme_cls.primary_palette = "Teal"
-        self.theme_cls.accent_palette = "Amber"
-        self.theme_cls.theme_style = "Light"
-        self.title = "FinGestor"
-        db_path = os.path.join(self.user_data_dir, "fingestor.db")
-        self.db = Database(db_path)
-        self.dialog = None
-        self.selected_client_id = None
-        self.discount_type = "FIXED"
-        self.sales_filter = "ALL"
-        self.current_sale_id = None
-        self.root_widget = Builder.load_string(KV)
-        return self.root_widget
-
-    def on_start(self):
-        self.build_dashboard()
-        self.build_sales()
-        self.build_contacts()
-        self.load_company_form()
-
-    TAB_TITLES = {
-        "tab_home": "Inicio", "tab_sales": "Vendas",
-        "tab_contacts": "Contatos", "tab_settings": "Configuracoes",
-    }
-
-    def on_tab_switch(self, *args):
-        # Assinatura varia entre versoes; procuramos o nome da aba nos argumentos
-        name = None
-        for a in args:
-            if isinstance(a, str) and a in self.TAB_TITLES:
-                name = a
-                break
-        if name is None:
-            for a in args:
-                n = getattr(a, "name", None)
-                if n in self.TAB_TITLES:
-                    name = n
-                    break
-        if name:
-            self.set_title(self.TAB_TITLES[name])
-        if name == "tab_home":
-            self.build_dashboard()
-        elif name == "tab_sales":
-            self.build_sales()
-        elif name == "tab_contacts":
-            self.build_contacts()
-        elif name == "tab_settings":
-            self.load_company_form()
-
-    # ---------------- utilitarios de UI ----------------
-    def sm(self):
-        return self.root_widget
-
-    def set_title(self, t):
-        self.root_widget.ids.top_bar.title = t
-
-    def toast(self, msg):
+def _font(size, bold=False):
+    """Tenta fontes comuns; cai para a fonte padrao do PIL se nao achar."""
+    candidates = [
+        "/system/fonts/Roboto-Bold.ttf" if bold else "/system/fonts/Roboto-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for c in candidates:
         try:
-            Snackbar(text=msg).open()
+            if os.path.exists(c):
+                return ImageFont.truetype(c, size)
         except Exception:
-            print("TOAST:", msg)
+            pass
+    try:
+        return ImageFont.truetype("DejaVuSans.ttf", size)
+    except Exception:
+        return ImageFont.load_default()
 
-    def go_main(self, tab=None):
-        self.root_widget.current = "main"
-        if tab:
-            self.root_widget.ids.bottom_nav.switch_tab(tab)
-        self.refresh_all()
 
-    def refresh_all(self, *_):
-        self.build_dashboard()
-        self.build_sales()
-        self.build_contacts()
+def _text_h(draw, text, font):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[3] - bbox[1]
 
-    def close_dialog(self, *_):
-        if self.dialog:
-            self.dialog.dismiss()
-            self.dialog = None
 
-    # ---------------- Dashboard ----------------
-    def build_dashboard(self, *_):
-        box = self.root_widget.ids.dash_box
-        box.clear_widgets()
-        recv = self.db.total_receivable()
-        overdue = self.db.total_overdue()
-        month = self.db.received_this_month()
+def render_receipt_image(sale, company):
+    """Retorna um objeto PIL.Image com o cupom da venda."""
+    f_title = _font(40, bold=True)
+    f_h = _font(26, bold=True)
+    f = _font(24)
+    f_small = _font(20)
+    f_total = _font(34, bold=True)
 
-        grid = MDBoxLayout(orientation="vertical", spacing=dp(10),
-                           adaptive_height=True)
+    # Estima altura
+    n_inst = len(sale.get("installments", []))
+    height = 520 + n_inst * 40 + 160
+    img = Image.new("RGB", (W, height), "white")
+    d = ImageDraw.Draw(img)
 
-        def card(value, label, bg):
-            c = StatCard()
-            c.value = value
-            c.label = label
-            c.md_bg_color = bg
-            return c
+    dark = (33, 37, 41)
+    gray = (110, 116, 122)
+    primary = (33, 82, 165)
+    y = PAD
 
-        grid.add_widget(card(fmt_money(recv), "A receber (em aberto)", (0.90, 0.97, 0.95, 1)))
-        grid.add_widget(card(fmt_money(overdue), "Vencido / atrasado", (0.99, 0.92, 0.92, 1)))
-        grid.add_widget(card(fmt_money(month), "Recebido no mes", (0.93, 0.96, 0.99, 1)))
-        box.add_widget(grid)
-
-        box.add_widget(MDLabel(text="Proximos vencimentos (7 dias)",
-                               font_style="H6", adaptive_height=True))
-        up = self.db.upcoming(days=7)
-        if not up:
-            box.add_widget(MDLabel(text="Nada a vencer nos proximos 7 dias.",
-                                   theme_text_color="Secondary", adaptive_height=True))
-        for i in up:
-            open_c = i["amount_cents"] - i["paid_cents"]
-            item = TwoLineListItem(
-                text=f"{i['contact_name']}  -  {fmt_money(open_c)}",
-                secondary_text=f"Venc. {i['due_date']}  [{STATUS_LABEL.get(i['status'],'')}]",
-                on_release=lambda x, sid=i["sale_id"]: self.open_sale(sid),
-            )
-            box.add_widget(item)
-
-    # ---------------- Vendas ----------------
-    def set_sales_filter(self, f):
-        self.sales_filter = f
-        self.build_sales()
-
-    def build_sales(self, *_):
-        lst = self.root_widget.ids.sales_list
-        lst.clear_widgets()
-        lst.add_widget(OneLineListItem(
-            text="+  Nova venda",
-            on_release=lambda x: self.start_new_sale()))
-        rows = self.db.list_sales()
-        if self.sales_filter == "OPEN":
-            rows = [r for r in rows if r["open_cents"] > 0]
-        elif self.sales_filter == "OVERDUE":
-            rows = [r for r in rows if r["status"] == "OVERDUE"]
-        if not rows:
-            lst.add_widget(OneLineListItem(text="Nenhuma venda ainda."))
-        for r in rows:
-            it = ThreeLineListItem(
-                text=f"{r['contact_name']}  -  {fmt_money(r['net_cents'])}",
-                secondary_text=f"{r['sale_date']}  |  {STATUS_LABEL.get(r['status'],'')}",
-                tertiary_text=f"Em aberto: {fmt_money(r['open_cents'])}",
-                on_release=lambda x, sid=r["id"]: self.open_sale(sid),
-            )
-            lst.add_widget(it)
-
-    # ---------------- Nova venda ----------------
-    def start_new_sale(self, *_):
-        s = self.root_widget  # ids ficam no widget raiz
-        self.selected_client_id = None
-        self.discount_type = "FIXED"
-        s.ids.ns_client_btn.text = "Selecionar cliente"
-        s.ids.ns_desc.text = ""
-        s.ids.ns_gross.text = ""
-        s.ids.ns_discount.text = "0"
-        s.ids.ns_disc_type.text = "R$"
-        s.ids.ns_installment.active = False
-        s.ids.ns_nparc.text = "1"
-        s.ids.ns_nparc.disabled = True
-        s.ids.ns_preview.text = ""
-        self.root_widget.current = "new_sale"
-
-    def on_installment_toggle(self, active):
-        s = self.root_widget  # ids ficam no widget raiz
-        s.ids.ns_nparc.disabled = not active
-        if not active:
-            s.ids.ns_nparc.text = "1"
-
-    def toggle_discount_type(self):
-        s = self.root_widget  # ids ficam no widget raiz
-        self.discount_type = "PERCENT" if self.discount_type == "FIXED" else "FIXED"
-        s.ids.ns_disc_type.text = "%" if self.discount_type == "PERCENT" else "R$"
-
-    def open_client_picker(self):
-        contacts = self.db.list_contacts()
-        content = MDBoxLayout(orientation="vertical", adaptive_height=True,
-                              spacing=dp(4), size_hint_y=None)
-        content.height = dp(min(400, 56 * max(1, len(contacts) + 1)))
-        from kivy.uix.scrollview import ScrollView
-        from kivymd.uix.list import MDList
-        ml = MDList()
-        ml.add_widget(OneLineListItem(text="(Sem cliente)",
-                      on_release=lambda x: self.pick_client(None, "Sem cliente")))
-        for c in contacts:
-            ml.add_widget(OneLineListItem(
-                text=c["name"],
-                on_release=lambda x, cid=c["id"], nm=c["name"]: self.pick_client(cid, nm)))
-        sv = ScrollView()
-        sv.add_widget(ml)
-        content.add_widget(sv)
-        self.dialog = MDDialog(title="Selecionar cliente", type="custom",
-                               content_cls=content,
-                               buttons=[MDFlatButton(text="Novo contato",
-                                        on_release=lambda x: (self.close_dialog(),
-                                                              self.open_contact_form())),
-                                        MDFlatButton(text="Fechar",
-                                        on_release=self.close_dialog)])
-        self.dialog.open()
-
-    def pick_client(self, cid, name):
-        self.selected_client_id = cid
-        self.root_widget.ids.ns_client_btn.text = name
-        self.close_dialog()
-
-    def save_sale(self):
-        s = self.root_widget  # ids ficam no widget raiz
-        gross = cents_from_str(s.ids.ns_gross.text)
-        if gross <= 0:
-            self.toast("Informe um valor bruto valido.")
-            return
-        if self.discount_type == "PERCENT":
-            disc_val = cents_from_str(s.ids.ns_discount.text)  # ex 10 -> 1000 (=10,00%)
-        else:
-            disc_val = cents_from_str(s.ids.ns_discount.text)
-        installment = s.ids.ns_installment.active
+    # Cabecalho: logo + empresa
+    logo_path = (company or {}).get("logo_path")
+    x_text = PAD
+    if logo_path and os.path.exists(logo_path):
         try:
-            n = int(s.ids.ns_nparc.text or "1")
-        except ValueError:
-            n = 1
-        sale_id = self.db.create_sale(
-            contact_id=self.selected_client_id,
-            gross_cents=gross,
-            discount_value_cents=disc_val,
-            discount_type=self.discount_type,
-            payment_type="INSTALLMENT" if installment else "CASH",
-            n_installments=n,
-            description=s.ids.ns_desc.text,
-        )
-        self.toast("Venda registrada!")
-        self.open_sale(sale_id)
+            logo = Image.open(logo_path).convert("RGBA")
+            logo.thumbnail((120, 120))
+            img.paste(logo, (PAD, y), logo)
+            x_text = PAD + 140
+        except Exception:
+            pass
 
-    # ---------------- Detalhe da venda ----------------
-    def open_sale(self, sale_id):
-        self.current_sale_id = sale_id
-        self.render_sale_detail()
-        self.root_widget.current = "sale_detail"
+    d.text((x_text, y), (company or {}).get("name") or "Minha Empresa",
+           font=f_title, fill=primary)
+    yy = y + 50
+    for key in ("document", "phone", "email", "address"):
+        val = (company or {}).get(key)
+        if val:
+            d.text((x_text, yy), str(val), font=f_small, fill=gray)
+            yy += 26
+    y = max(y + 140, yy + 10)
 
-    def render_sale_detail(self):
-        sale = self.db.get_sale(self.current_sale_id)
-        box = self.root_widget.ids.detail_box
-        box.clear_widgets()
-        if not sale:
-            box.add_widget(MDLabel(text="Venda nao encontrada."))
-            return
-        cname = sale["contact"]["name"] if sale["contact"] else "Sem cliente"
-        box.add_widget(MDLabel(text=f"#{sale['id']:05d}  -  {cname}",
-                               font_style="H6", adaptive_height=True))
-        box.add_widget(MDLabel(text=f"Data: {sale['sale_date']}   |   "
-                                    f"{STATUS_LABEL.get(sale['status'],'')}",
-                               theme_text_color="Secondary", adaptive_height=True))
-        box.add_widget(MDLabel(text=f"Subtotal: {fmt_money(sale['gross_cents'])}",
-                               adaptive_height=True))
-        if sale["discount_cents"] > 0:
-            box.add_widget(MDLabel(text=f"Desconto: -{fmt_money(sale['discount_cents'])}",
-                                   adaptive_height=True))
-        box.add_widget(MDLabel(text=f"Total: {fmt_money(sale['net_cents'])}",
-                               font_style="H6", adaptive_height=True))
+    d.line([(PAD, y), (W - PAD, y)], fill=(220, 224, 228), width=2)
+    y += 24
 
-        box.add_widget(MDLabel(text="Parcelas", font_style="Subtitle1",
-                               adaptive_height=True))
-        for i in sale["installments"]:
-            st = Database.installment_status(i)
-            open_c = i["amount_cents"] - i["paid_cents"]
-            txt = f"{i['number']}/{len(sale['installments'])}  -  {fmt_money(i['amount_cents'])}"
-            sec = f"Venc. {i['due_date']}  [{STATUS_LABEL.get(st,'')}]  aberto {fmt_money(open_c)}"
-            item = TwoLineListItem(text=txt, secondary_text=sec)
-            if open_c > 0:
-                item.on_release = lambda x, iid=i["id"], oc=open_c: self.open_pay_dialog(iid, oc)
-            box.add_widget(item)
+    # Titulo comprovante
+    d.text((PAD, y), "COMPROVANTE DE VENDA", font=f_h, fill=dark)
+    d.text((W - PAD - 160, y), f"#{sale['id']:05d}", font=f_h, fill=gray)
+    y += 44
 
-        btns = MDBoxLayout(adaptive_height=True, spacing=dp(8), padding=(0, dp(12)))
-        btns.add_widget(MDRaisedButton(text="Gerar cupom (PDF)",
-                        on_release=lambda x: self.make_receipt("pdf")))
-        btns.add_widget(MDRaisedButton(text="Imagem (PNG)",
-                        on_release=lambda x: self.make_receipt("png")))
-        box.add_widget(btns)
+    cliente = (sale.get("contact") or {}).get("name") if sale.get("contact") else "Sem cliente"
+    d.text((PAD, y), f"Cliente: {cliente}", font=f, fill=dark); y += 34
+    d.text((PAD, y), f"Data: {sale['sale_date']}", font=f, fill=dark); y += 34
+    d.text((PAD, y), f"Pagamento: {STATUS_LABEL.get(sale['payment_type'], sale['payment_type'])}",
+           font=f, fill=dark)
+    y += 44
 
-    def open_pay_dialog(self, installment_id, open_cents):
-        field = MDTextField(hint_text="Valor da baixa",
-                            text=f"{open_cents/100:.2f}".replace(".", ","))
-        content = MDBoxLayout(orientation="vertical", adaptive_height=True,
-                              size_hint_y=None, height=dp(90), padding=dp(8))
-        content.add_widget(field)
-        self.dialog = MDDialog(
-            title="Dar baixa",
-            type="custom",
-            content_cls=content,
-            buttons=[
-                MDFlatButton(text="Total",
-                             on_release=lambda x: self.do_pay(installment_id, open_cents)),
-                MDRaisedButton(text="Confirmar",
-                               on_release=lambda x: self.do_pay(installment_id,
-                                                                cents_from_str(field.text))),
-                MDFlatButton(text="Cancelar", on_release=self.close_dialog),
-            ],
-        )
-        self.dialog.open()
+    d.line([(PAD, y), (W - PAD, y)], fill=(235, 238, 240), width=1)
+    y += 20
 
-    def do_pay(self, installment_id, amount_cents):
-        if amount_cents <= 0:
-            self.toast("Valor invalido.")
-            return
-        self.db.pay_installment(installment_id, amount_cents)
-        self.close_dialog()
-        self.toast("Baixa registrada!")
-        self.render_sale_detail()
+    # Valores
+    def row(label, value, bold=False, color=dark):
+        nonlocal y
+        d.text((PAD, y), label, font=(f_h if bold else f), fill=color)
+        val_font = f_total if bold else f
+        vw = d.textlength(value, font=val_font)
+        d.text((W - PAD - vw, y), value, font=val_font, fill=color)
+        y += 48 if bold else 34
 
-    def make_receipt(self, fmt):
-        sale = self.db.get_sale(self.current_sale_id)
-        company = self.db.get_company()
-        out_dir = os.path.join(self.user_data_dir, "cupons")
-        try:
-            paths = receipt.save_receipt(sale, company, out_dir, fmt=fmt)
-        except Exception as e:
-            self.toast(f"Erro ao gerar cupom: {e}")
-            return
-        path = paths.get(fmt) or next(iter(paths.values()))
-        mime = "application/pdf" if fmt == "pdf" else "image/png"
-        shared = receipt.share_file(path, mime=mime)
-        if not shared:
-            self.toast(f"Cupom salvo em: {path}")
+    row("Subtotal", fmt_money(sale["gross_cents"]))
+    if sale["discount_cents"] > 0:
+        row("Desconto", "- " + fmt_money(sale["discount_cents"]), color=(180, 60, 60))
+    y += 6
+    d.line([(PAD, y), (W - PAD, y)], fill=(220, 224, 228), width=2); y += 16
+    row("TOTAL", fmt_money(sale["net_cents"]), bold=True, color=primary)
+    y += 10
 
-    # ---------------- Contatos ----------------
-    def build_contacts(self, *_):
-        lst = self.root_widget.ids.contacts_list
-        search = self.root_widget.ids.contact_search.text
-        lst.clear_widgets()
-        contacts = self.db.list_contacts(search=search)
-        if not contacts:
-            lst.add_widget(OneLineListItem(text="Nenhum contato. Use o botao Novo."))
-        for c in contacts:
-            tot = self.db.contact_totals(c["id"])
-            it = TwoLineListItem(
-                text=c["name"],
-                secondary_text=f"{c.get('phone') or ''}  |  Devedor: {fmt_money(tot['owed_cents'])}",
-                on_release=lambda x, cid=c["id"]: self.open_contact_form(cid),
-            )
-            lst.add_widget(it)
-        lst.add_widget(OneLineListItem(text="+  Novo contato",
-                       on_release=lambda x: self.open_contact_form()))
+    # Parcelas
+    insts = sale.get("installments", [])
+    if len(insts) > 1 or sale["payment_type"] == "INSTALLMENT":
+        d.text((PAD, y), "Parcelas", font=f_h, fill=dark); y += 40
+        for i in insts:
+            st = STATUS_LABEL.get(_inst_status(i, sale), "")
+            line = f"{i['number']}/{len(insts)}  venc. {i['due_date']}"
+            d.text((PAD, y), line, font=f_small, fill=gray)
+            right = f"{fmt_money(i['amount_cents'])}  [{st}]"
+            rw = d.textlength(right, font=f_small)
+            d.text((W - PAD - rw, y), right, font=f_small, fill=dark)
+            y += 36
+        y += 10
 
-    def open_contact_form(self, cid=None):
-        data = self.db.get_contact(cid) if cid else {}
-        f_name = MDTextField(hint_text="Nome*", text=data.get("name", "") if data else "")
-        f_phone = MDTextField(hint_text="Telefone", text=data.get("phone", "") if data else "")
-        f_email = MDTextField(hint_text="E-mail", text=data.get("email", "") if data else "")
-        f_doc = MDTextField(hint_text="CPF/CNPJ", text=data.get("document", "") if data else "")
-        f_addr = MDTextField(hint_text="Endereco", text=data.get("address", "") if data else "")
-        content = MDBoxLayout(orientation="vertical", adaptive_height=True,
-                              size_hint_y=None, spacing=dp(4), padding=dp(4))
-        for w in (f_name, f_phone, f_email, f_doc, f_addr):
-            content.add_widget(w)
-        content.height = dp(300)
+    # Rodape
+    footer = (company or {}).get("receipt_footer") or "Obrigado pela preferencia!"
+    d.line([(PAD, y), (W - PAD, y)], fill=(235, 238, 240), width=1); y += 16
+    d.text((PAD, y), footer, font=f_small, fill=gray); y += 30
+    d.text((PAD, y), "Gerado pelo FinGestor", font=_font(16), fill=(180, 185, 190))
+    y += 30
 
-        def save(*_):
-            if not f_name.text.strip():
-                self.toast("Nome obrigatorio.")
-                return
-            payload = dict(name=f_name.text.strip(), phone=f_phone.text,
-                           email=f_email.text, document=f_doc.text, address=f_addr.text)
-            if cid:
-                self.db.update_contact(cid, **payload)
-            else:
-                self.db.add_contact(**payload)
-            self.close_dialog()
-            self.build_contacts()
-            self.toast("Contato salvo!")
-
-        buttons = [MDRaisedButton(text="Salvar", on_release=save),
-                   MDFlatButton(text="Fechar", on_release=self.close_dialog)]
-        if cid:
-            buttons.insert(0, MDFlatButton(
-                text="Excluir",
-                on_release=lambda x: self.try_delete_contact(cid)))
-        self.dialog = MDDialog(title="Contato", type="custom",
-                               content_cls=content, buttons=buttons)
-        self.dialog.open()
-
-    def try_delete_contact(self, cid):
-        ok = self.db.delete_contact(cid)
-        self.close_dialog()
-        if ok:
-            self.toast("Contato excluido.")
-        else:
-            self.db.archive_contact(cid, True)
-            self.toast("Tem vendas: contato arquivado (nao excluido).")
-        self.build_contacts()
-
-    # ---------------- Configuracoes ----------------
-    def load_company_form(self, *_):
-        c = self.db.get_company() or {}
-        ids = self.root_widget.ids
-        ids.co_name.text = c.get("name") or ""
-        ids.co_document.text = c.get("document") or ""
-        ids.co_phone.text = c.get("phone") or ""
-        ids.co_email.text = c.get("email") or ""
-        ids.co_address.text = c.get("address") or ""
-        ids.co_currency.text = c.get("currency") or "R$"
-        ids.co_footer.text = c.get("receipt_footer") or ""
-
-    def save_company(self):
-        ids = self.root_widget.ids
-        self.db.save_company(
-            name=ids.co_name.text, document=ids.co_document.text,
-            phone=ids.co_phone.text, email=ids.co_email.text,
-            address=ids.co_address.text, currency=ids.co_currency.text or "R$",
-            receipt_footer=ids.co_footer.text, logo_path=None,
-        )
-        self.toast("Configuracoes salvas!")
+    return img.crop((0, 0, W, min(height, y + PAD)))
 
 
-if __name__ == "__main__":
-    FinGestorApp().run()
+def _inst_status(inst, sale):
+    from db import Database
+    return Database.installment_status(inst)
+
+
+def save_receipt(sale, company, out_dir, fmt="both"):
+    """Gera o cupom e salva. Retorna dict {'png': path, 'pdf': path}."""
+    os.makedirs(out_dir, exist_ok=True)
+    img = render_receipt_image(sale, company)
+    base = os.path.join(out_dir, f"cupom_{sale['id']:05d}")
+    out = {}
+    if fmt in ("png", "both"):
+        p = base + ".png"
+        img.save(p, "PNG")
+        out["png"] = p
+    if fmt in ("pdf", "both"):
+        p = base + ".pdf"
+        img.convert("RGB").save(p, "PDF", resolution=150.0)
+        out["pdf"] = p
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Compartilhamento (Android)
+# ---------------------------------------------------------------------------
+
+def share_file(path, mime="application/pdf", text="Segue seu comprovante."):
+    """Abre o share sheet do Android via FileProvider. Retorna True em sucesso.
+    Em desktop (sem Android) retorna False silenciosamente."""
+    try:
+        from jnius import autoclass, cast
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        Intent = autoclass("android.content.Intent")
+        File = autoclass("java.io.File")
+        FileProvider = autoclass("androidx.core.content.FileProvider")
+        String = autoclass("java.lang.String")
+
+        activity = PythonActivity.mActivity
+        jfile = File(path)
+        authority = activity.getPackageName() + ".fileprovider"
+        uri = FileProvider.getUriForFile(activity, authority, jfile)
+
+        intent = Intent(Intent.ACTION_SEND)
+        intent.setType(mime)
+        intent.putExtra(Intent.EXTRA_STREAM, cast("android.os.Parcelable", uri))
+        intent.putExtra(Intent.EXTRA_TEXT, cast("java.lang.CharSequence", String(text)))
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+        title = cast("java.lang.CharSequence", String("Compartilhar comprovante"))
+        chooser = Intent.createChooser(intent, title)
+        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        activity.startActivity(chooser)
+        return True
+    except Exception as e:
+        print("share_file: nao foi possivel compartilhar:", e)
+        return False
