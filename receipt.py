@@ -228,20 +228,34 @@ def save_report(title, company, sections, out_dir, filename, subtitle="", fmt="p
 # ---------------------------------------------------------------------------
 
 def share_file(path, mime="application/pdf", text="Segue seu comprovante."):
-    """Abre o share sheet do Android via FileProvider. Retorna True em sucesso.
-    Em desktop (sem Android) retorna False silenciosamente."""
+    """Abre o share sheet do Android via FileProvider.
+    Retorna (True, "") em sucesso, ou (False, mensagem_de_erro) em falha
+    (inclusive no desktop, onde jnius nao existe)."""
     try:
         from jnius import autoclass, cast
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
         Intent = autoclass("android.content.Intent")
         File = autoclass("java.io.File")
-        FileProvider = autoclass("androidx.core.content.FileProvider")
         String = autoclass("java.lang.String")
 
         activity = PythonActivity.mActivity
+        context = activity.getApplicationContext()
         jfile = File(path)
-        authority = activity.getPackageName() + ".fileprovider"
-        uri = FileProvider.getUriForFile(activity, authority, jfile)
+        authority = str(context.getPackageName()) + ".fileprovider"
+
+        # Tenta a FileProvider do androidx e, se falhar, a do support antigo.
+        uri = None
+        last = None
+        for cls in ("androidx.core.content.FileProvider",
+                    "android.support.v4.content.FileProvider"):
+            try:
+                FP = autoclass(cls)
+                uri = FP.getUriForFile(context, authority, jfile)
+                break
+            except Exception as e:
+                last = e
+        if uri is None:
+            raise RuntimeError(f"FileProvider falhou (authority={authority}): {last}")
 
         intent = Intent(Intent.ACTION_SEND)
         intent.setType(mime)
@@ -249,11 +263,13 @@ def share_file(path, mime="application/pdf", text="Segue seu comprovante."):
         intent.putExtra(Intent.EXTRA_TEXT, cast("java.lang.CharSequence", String(text)))
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 
-        title = cast("java.lang.CharSequence", String("Compartilhar comprovante"))
+        title = cast("java.lang.CharSequence", String("Compartilhar"))
         chooser = Intent.createChooser(intent, title)
         chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         activity.startActivity(chooser)
-        return True
+        return True, ""
     except Exception as e:
-        print("share_file: nao foi possivel compartilhar:", e)
-        return False
+        import traceback
+        traceback.print_exc()
+        return False, f"{type(e).__name__}: {e}"

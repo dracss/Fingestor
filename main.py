@@ -268,6 +268,81 @@ ScreenManager:
                         text: "Salvar"
                         pos_hint: {"center_x": 0.5}
                         on_release: app.save_company()
+
+    Screen:
+        name: "contact_form"
+        MDBoxLayout:
+            orientation: "vertical"
+            MDTopAppBar:
+                id: cf_bar
+                title: "Contato"
+                left_action_items: [["arrow-left", lambda x: app.go_main("tab_contacts")]]
+            ScrollView:
+                MDBoxLayout:
+                    orientation: "vertical"
+                    padding: dp(16)
+                    spacing: dp(12)
+                    adaptive_height: True
+                    MDTextField:
+                        id: cf_name
+                        hint_text: "Nome *"
+                    MDTextField:
+                        id: cf_phone
+                        hint_text: "Telefone"
+                    MDTextField:
+                        id: cf_email
+                        hint_text: "E-mail"
+                    MDTextField:
+                        id: cf_doc
+                        hint_text: "CPF / CNPJ"
+                    MDTextField:
+                        id: cf_address
+                        hint_text: "Endereco"
+                    MDBoxLayout:
+                        adaptive_height: True
+                        spacing: dp(8)
+                        padding: 0, dp(8)
+                        MDRaisedButton:
+                            text: "Salvar"
+                            on_release: app.save_contact_form()
+                        MDFlatButton:
+                            id: cf_delete
+                            text: "Excluir"
+                            on_release: app.delete_contact_form()
+
+    Screen:
+        name: "payable_form"
+        MDBoxLayout:
+            orientation: "vertical"
+            MDTopAppBar:
+                title: "Nova conta a pagar"
+                left_action_items: [["arrow-left", lambda x: app.go_main("tab_payables")]]
+            ScrollView:
+                MDBoxLayout:
+                    orientation: "vertical"
+                    padding: dp(16)
+                    spacing: dp(12)
+                    adaptive_height: True
+                    MDRaisedButton:
+                        id: pf_supplier
+                        text: "Fornecedor (opcional)"
+                        on_release: app.open_contact_picker(app.pick_payable_supplier)
+                    MDTextField:
+                        id: pf_desc
+                        hint_text: "Descricao *"
+                    MDTextField:
+                        id: pf_amount
+                        hint_text: "Valor (ex: 200,00)"
+                    MDTextField:
+                        id: pf_due
+                        hint_text: "Vencimento (AAAA-MM-DD)"
+                    MDTextField:
+                        id: pf_cat
+                        hint_text: "Categoria (opcional)"
+                    MDRaisedButton:
+                        text: "Salvar"
+                        pos_hint: {"center_x": 0.5}
+                        on_release: app.save_payable_form()
 '''
 
 
@@ -282,6 +357,7 @@ class FinGestorApp(MDApp):
         self.dialog = None
         self.sale_client_id = None
         self.payable_supplier_id = None
+        self.editing_contact_id = None
         self.discount_type = "FIXED"
         self.sales_filter = "ALL"
         self.current_sale_id = None
@@ -583,9 +659,12 @@ class FinGestorApp(MDApp):
         self.dialog.open()
 
     def _do_share(self, path, mime):
-        ok = receipt.share_file(path, mime=mime)
+        ok, err = receipt.share_file(path, mime=mime)
         if not ok:
-            self.toast("Compartilhamento indisponivel aqui; arquivo salvo no aparelho.")
+            self.show_message(
+                "Nao foi possivel compartilhar",
+                f"O arquivo esta salvo no aparelho em:\n{path}\n\n"
+                f"Detalhe tecnico (para suporte):\n{err}")
 
     # ---------------- Contas a pagar ----------------
     def build_payables(self, *_):
@@ -607,44 +686,31 @@ class FinGestorApp(MDApp):
 
     def open_payable_form(self, *_):
         self.payable_supplier_id = None
-        f_desc = MDTextField(hint_text="Descricao*")
-        f_amount = MDTextField(hint_text="Valor (ex: 200,00)")
-        f_due = MDTextField(hint_text="Vencimento (AAAA-MM-DD)", text=today_iso())
-        f_cat = MDTextField(hint_text="Categoria (opcional)")
-        sup_btn = MDRaisedButton(text="Fornecedor (opcional)")
-        sup_btn.bind(on_release=lambda x: self.open_contact_picker(
-            lambda cid, nm: self._pick_supplier(cid, nm, sup_btn)))
-        content = MDBoxLayout(orientation="vertical", adaptive_height=True,
-                              size_hint_y=None, spacing=dp(6), padding=dp(6))
-        for w in (sup_btn, f_desc, f_amount, f_due, f_cat):
-            content.add_widget(w)
-        content.height = dp(320)
+        ids = self.root_widget.ids
+        ids.pf_supplier.text = "Fornecedor (opcional)"
+        ids.pf_desc.text = ""
+        ids.pf_amount.text = ""
+        ids.pf_due.text = today_iso()
+        ids.pf_cat.text = ""
+        self.root_widget.current = "payable_form"
 
-        def save(*_):
-            amt = cents_from_str(f_amount.text)
-            if not f_desc.text.strip() or amt <= 0:
-                self.toast("Informe descricao e valor validos.")
-                return
-            self.db.add_payable(description=f_desc.text.strip(), amount_cents=amt,
-                                due_date=f_due.text.strip() or today_iso(),
-                                contact_id=self.payable_supplier_id,
-                                category=f_cat.text.strip())
-            self.close_dialog()
-            self.build_payables()
-            self.build_dashboard()
-            self.toast("Conta a pagar registrada!")
-
-        self.dialog = MDDialog(title="Nova conta a pagar", type="custom",
-                               content_cls=content,
-                               buttons=[MDRaisedButton(text="Salvar", on_release=save),
-                                        MDFlatButton(text="Cancelar",
-                                                     on_release=self.close_dialog)])
-        self.dialog.open()
-
-    def _pick_supplier(self, cid, name, btn):
+    def pick_payable_supplier(self, cid, name):
         self.payable_supplier_id = cid
-        btn.text = name or "Fornecedor (opcional)"
+        self.root_widget.ids.pf_supplier.text = name or "Fornecedor (opcional)"
         self.close_dialog()
+
+    def save_payable_form(self):
+        ids = self.root_widget.ids
+        amt = cents_from_str(ids.pf_amount.text)
+        if not ids.pf_desc.text.strip() or amt <= 0:
+            self.toast("Informe descricao e valor validos.")
+            return
+        self.db.add_payable(description=ids.pf_desc.text.strip(), amount_cents=amt,
+                            due_date=ids.pf_due.text.strip() or today_iso(),
+                            contact_id=self.payable_supplier_id,
+                            category=ids.pf_cat.text.strip())
+        self.toast("Conta a pagar registrada!")
+        self.go_main("tab_payables")
 
     def open_payable_detail(self, pid):
         p = self.db.get_payable(pid)
@@ -783,50 +849,45 @@ class FinGestorApp(MDApp):
             ))
 
     def open_contact_form(self, cid=None):
+        """Abre a TELA de contato (evita o problema de campo cortado no dialogo)."""
+        self.editing_contact_id = cid
         data = self.db.get_contact(cid) if cid else {}
-        f_name = MDTextField(hint_text="Nome*", text=(data.get("name", "") if data else ""))
-        f_phone = MDTextField(hint_text="Telefone", text=(data.get("phone", "") if data else ""))
-        f_email = MDTextField(hint_text="E-mail", text=(data.get("email", "") if data else ""))
-        f_doc = MDTextField(hint_text="CPF/CNPJ", text=(data.get("document", "") if data else ""))
-        f_addr = MDTextField(hint_text="Endereco", text=(data.get("address", "") if data else ""))
-        content = MDBoxLayout(orientation="vertical", adaptive_height=True,
-                              size_hint_y=None, spacing=dp(4), padding=dp(4))
-        for w in (f_name, f_phone, f_email, f_doc, f_addr):
-            content.add_widget(w)
-        content.height = dp(300)
+        ids = self.root_widget.ids
+        ids.cf_bar.title = "Editar contato" if cid else "Novo contato"
+        ids.cf_name.text = (data.get("name") or "") if data else ""
+        ids.cf_phone.text = (data.get("phone") or "") if data else ""
+        ids.cf_email.text = (data.get("email") or "") if data else ""
+        ids.cf_doc.text = (data.get("document") or "") if data else ""
+        ids.cf_address.text = (data.get("address") or "") if data else ""
+        ids.cf_delete.disabled = cid is None
+        ids.cf_delete.opacity = 1 if cid else 0
+        self.root_widget.current = "contact_form"
 
-        def save(*_):
-            if not f_name.text.strip():
-                self.toast("Nome obrigatorio.")
-                return
-            payload = dict(name=f_name.text.strip(), phone=f_phone.text,
-                           email=f_email.text, document=f_doc.text, address=f_addr.text)
-            if cid:
-                self.db.update_contact(cid, **payload)
-            else:
-                self.db.add_contact(**payload)
-            self.close_dialog()
-            self.build_contacts()
-            self.toast("Contato salvo!")
+    def save_contact_form(self):
+        ids = self.root_widget.ids
+        if not ids.cf_name.text.strip():
+            self.toast("Nome obrigatorio.")
+            return
+        payload = dict(name=ids.cf_name.text.strip(), phone=ids.cf_phone.text,
+                       email=ids.cf_email.text, document=ids.cf_doc.text,
+                       address=ids.cf_address.text)
+        if self.editing_contact_id:
+            self.db.update_contact(self.editing_contact_id, **payload)
+        else:
+            self.db.add_contact(**payload)
+        self.toast("Contato salvo!")
+        self.go_main("tab_contacts")
 
-        buttons = [MDRaisedButton(text="Salvar", on_release=save),
-                   MDFlatButton(text="Fechar", on_release=self.close_dialog)]
-        if cid:
-            buttons.insert(0, MDFlatButton(text="Excluir",
-                           on_release=lambda x: self.try_delete_contact(cid)))
-        self.dialog = MDDialog(title="Contato", type="custom",
-                               content_cls=content, buttons=buttons)
-        self.dialog.open()
-
-    def try_delete_contact(self, cid):
-        ok = self.db.delete_contact(cid)
-        self.close_dialog()
-        if ok:
+    def delete_contact_form(self):
+        cid = self.editing_contact_id
+        if not cid:
+            return
+        if self.db.delete_contact(cid):
             self.toast("Contato excluido.")
         else:
             self.db.archive_contact(cid, True)
             self.toast("Tem vendas: contato arquivado.")
-        self.build_contacts()
+        self.go_main("tab_contacts")
 
     # Picker de contato reutilizavel (vendas e fornecedores)
     def open_contact_picker(self, on_pick):
