@@ -161,6 +161,69 @@ def save_receipt(sale, company, out_dir, fmt="both"):
 
 
 # ---------------------------------------------------------------------------
+# Relatorios (PDF / PNG)
+# ---------------------------------------------------------------------------
+
+def render_report_image(title, company, sections, subtitle=""):
+    """sections = [(heading, [(left, right), ...]), ...]. Retorna PIL.Image."""
+    f_title = _font(38, bold=True)
+    f_sub = _font(22)
+    f_h = _font(26, bold=True)
+    f = _font(23)
+    dark = (33, 37, 41)
+    gray = (110, 116, 122)
+    primary = (33, 82, 165)
+
+    total_rows = sum(len(rows) for _, rows in sections)
+    height = 240 + len(sections) * 70 + total_rows * 38 + 120
+    img = Image.new("RGB", (W, height), "white")
+    d = ImageDraw.Draw(img)
+    y = PAD
+
+    d.text((PAD, y), (company or {}).get("name") or "Minha Empresa",
+           font=f_h, fill=primary)
+    y += 40
+    d.text((PAD, y), title, font=f_title, fill=dark)
+    y += 48
+    if subtitle:
+        d.text((PAD, y), subtitle, font=f_sub, fill=gray)
+        y += 32
+    d.line([(PAD, y), (W - PAD, y)], fill=(220, 224, 228), width=2)
+    y += 20
+
+    for heading, rows in sections:
+        d.text((PAD, y), heading, font=f_h, fill=primary)
+        y += 40
+        if not rows:
+            d.text((PAD, y), "(sem dados)", font=f, fill=gray)
+            y += 38
+        for left, right in rows:
+            d.text((PAD, y), str(left), font=f, fill=dark)
+            rw = d.textlength(str(right), font=f)
+            d.text((W - PAD - rw, y), str(right), font=f, fill=dark)
+            y += 38
+        y += 10
+        d.line([(PAD, y), (W - PAD, y)], fill=(235, 238, 240), width=1)
+        y += 16
+
+    d.text((PAD, y + 6), "Gerado pelo FinGestor", font=_font(16), fill=(180, 185, 190))
+    return img.crop((0, 0, W, min(height, y + 50)))
+
+
+def save_report(title, company, sections, out_dir, filename, subtitle="", fmt="pdf"):
+    os.makedirs(out_dir, exist_ok=True)
+    img = render_report_image(title, company, sections, subtitle)
+    base = os.path.join(out_dir, filename)
+    out = {}
+    if fmt in ("png", "both"):
+        p = base + ".png"; img.save(p, "PNG"); out["png"] = p
+    if fmt in ("pdf", "both"):
+        p = base + ".pdf"; img.convert("RGB").save(p, "PDF", resolution=150.0)
+        out["pdf"] = p
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Compartilhamento (Android)
 # ---------------------------------------------------------------------------
 

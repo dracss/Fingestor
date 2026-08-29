@@ -105,9 +105,21 @@ CREATE TABLE IF NOT EXISTS payments (
     method TEXT DEFAULT 'CASH',
     FOREIGN KEY (installment_id) REFERENCES installments(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS payables (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id INTEGER,
+    description TEXT,
+    category TEXT,
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    paid_cents INTEGER NOT NULL DEFAULT 0,
+    due_date TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL
+);
 CREATE INDEX IF NOT EXISTS idx_inst_sale ON installments(sale_id);
 CREATE INDEX IF NOT EXISTS idx_inst_due  ON installments(due_date);
 CREATE INDEX IF NOT EXISTS idx_sale_contact ON sales(contact_id);
+CREATE INDEX IF NOT EXISTS idx_pay_due ON payables(due_date);
 """
 
 
@@ -395,6 +407,111 @@ class Database:
                WHERE s.contact_id=? AND i.amount_cents > i.paid_cents""",
             (cid,)).fetchone()[0]
         return {"bought_cents": bought, "owed_cents": owed}
+
+    # ----- Contas a pagar -----
+    def add_payable(self, description, amount_cents, due_date=None,
+                    contact_id=None, category=""):
+        due_date = due_date or today_iso()
+        cur = self.conn.execute(
+            """INSERT INTO payables (contact_id,description,category,amount_cents,
+                                     paid_cents,due_date,created_at)
+               VALUES (?,?,?,?,0,?,?)""",
+            (contact_id, description, category, amount_cents, due_date, today_iso()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def pay_payable(self, payable_id, amount_cents):
+        self.conn.execute(
+            "UPDATE payables SET paid_cents = paid_cents + ? WHERE id=?",
+            (amount_cents, payable_id))
+        self.conn.commit()
+
+    def delete_payable(self, payable_id):
+        self.conn.execute("DELETE FROM payables WHERE id=?", (payable_id,))
+        self.conn.commit()
+
+    @staticmethod
+    def payable_status(p, ref=None):
+        ref = ref or today_iso()
+        if p["paid_cents"] >= p["amount_cents"] and p["amount_cents"] > 0:
+            return "PAID"
+        if p["due_date"] < ref and p["paid_cents"] < p["amount_cents"]:
+            return "OVERDUE"
+        if 0 < p["paid_cents"] < p["amount_cents"]:
+            return "PARTIAL"
+        return "PENDING"
+
+    def list_payables(self, only_open=False):
+        rows = [dict(r) for r in self.conn.execute(
+            "SELECT * FROM payables ORDER BY due_date ASC, id DESC").fetchall()]
+        for r in rows:
+            r["status"] = self.payable_status(r)
+            r["open_cents"] = r["amount_cents"] - r["paid_cents"]
+            c = self.get_contact(r["contact_id"]) if r["contact_id"] else None
+            r["contact_name"] = c["name"] if c else ""
+        if only_open:
+            rows = [r for r in rows if r["open_cents"] > 0]
+        return rows
+
+    def get_payable(self, pid):
+        r = self.conn.execute("SELECT * FROM payables WHERE id=?", (pid,)).fetchone()
+        return dict(r) if r else None
+
+    def total_payable(self):
+        return self.conn.execute(
+            "SELECT COALESCE(SUM(amount_cents - paid_cents),0) FROM payables "
+            "WHERE amount_cents > paid_cents").fetchone()[0]
+
+    def total_payable_overdue(self, ref=None):
+        ref = ref or today_iso()
+        return self.conn.execute(
+            "SELECT COALESCE(SUM(amount_cents - paid_cents),0) FROM payables "
+            "WHERE amount_cents > paid_cents AND due_date < ?", (ref,)).fetchone()[0]
+
+    # ----- Relatorios -----
+    def sales_by_client(self):
+        """Retorna [{name, count, net_cents, paid_cents, open_cents}] por cliente."""
+        rows = self.conn.execute("""
+            SELECT c.id AS cid, c.name AS name,
+                   COUNT(s.id) AS n,
+                   COALESCE(SUM(s.net_cents),0) AS net
+            FROM contacts c JOIN sales s ON s.contact_id = c.id
+            GROUP BY c.id ORDER BY net DESC
+        """).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            tot = self.contact_totals(d["cid"])
+            paid = self.conn.execute("""
+                SELECT COALESCE(SUM(i.paid_cents),0)
+                FROM installments i JOIN sales s ON s.id=i.sale_id
+                WHERE s.contact_id=?""", (d["cid"],)).fetchone()[0]
+            out.append({
+                "name": d["name"], "count": d["n"],
+                "net_cents": d["net"], "paid_cents": paid,
+                "open_cents": tot["owed_cents"],
+            })
+        return out
+
+    def sales_summary(self, start=None, end=None):
+        """Totais de vendas (opcionalmente por periodo)."""
+        q = "SELECT COUNT(*) n, COALESCE(SUM(net_cents),0) net FROM sales WHERE 1=1"
+        args = []
+        if start:
+            q += " AND sale_date >= ?"; args.append(start)
+        if end:
+            q += " AND sale_date <= ?"; args.append(end)
+        r = self.conn.execute(q, args).fetchone()
+        n, net = r[0], r[1]
+        return {"count": n, "net_cents": net,
+                "avg_cents": (net // n) if n else 0}
+
+    def payable_vs_receivable(self):
+        recv = self.total_receivable()
+        pay = self.total_payable()
+        return {"receivable_cents": recv, "payable_cents": pay,
+                "balance_cents": recv - pay}
 
     def close(self):
         self.conn.close()

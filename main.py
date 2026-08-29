@@ -1,16 +1,16 @@
 """
-FinGestor - App de contas a pagar e a receber (MVP).
-UI em KivyMD; dados em SQLite (db.py); cupom em PNG/PDF (receipt.py).
+FinGestor - App de contas a pagar e a receber (Fase 2).
+UI em KivyMD; dados em SQLite (db.py); cupom e relatorios em PNG/PDF (receipt.py).
 
 Testavel no desktop:  python main.py
 Empacotavel em APK:   via GitHub Actions (.github/workflows) ou `buildozer android debug`
 """
 import os
 from kivy.lang import Builder
-from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.core.window import Window
+from kivy.properties import StringProperty
 
 from kivymd.app import MDApp
 from kivymd.uix.dialog import MDDialog
@@ -18,19 +18,13 @@ from kivymd.uix.button import MDRaisedButton, MDFlatButton
 from kivymd.uix.textfield import MDTextField
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.list import (
-    ThreeLineListItem, TwoLineListItem, OneLineListItem, IconLeftWidget,
-    TwoLineAvatarIconListItem,
+    ThreeLineListItem, TwoLineListItem, OneLineListItem, MDList,
 )
 from kivymd.uix.selectioncontrol import MDCheckbox
 from kivymd.uix.label import MDLabel
 from kivymd.uix.card import MDCard
-from kivymd.uix.snackbar import Snackbar
-from kivy.properties import StringProperty
-
-
-class StatCard(MDCard):
-    value = StringProperty("")
-    label = StringProperty("")
+from kivymd.uix.snackbar import MDSnackbar
+from kivy.uix.scrollview import ScrollView
 
 from db import Database, fmt_money, cents_from_str, STATUS_LABEL, today_iso
 import receipt
@@ -39,6 +33,11 @@ import receipt
 from kivy.utils import platform as _platform
 if _platform not in ("android", "ios"):
     Window.size = (400, 720)
+
+
+class StatCard(MDCard):
+    value = StringProperty("")
+    label = StringProperty("")
 
 
 KV = '''
@@ -50,9 +49,7 @@ KV = '''
     radius: [16,]
     md_bg_color: app.theme_cls.primary_light
     size_hint_y: None
-    height: dp(96)
-    value: ""
-    label: ""
+    height: dp(92)
     MDLabel:
         text: root.value
         font_style: "H6"
@@ -75,7 +72,7 @@ ScreenManager:
                 id: top_bar
                 title: "FinGestor"
                 elevation: 2
-                right_action_items: [["refresh", lambda x: app.refresh_all()]]
+                right_action_items: [["cog", lambda x: app.open_settings()], ["refresh", lambda x: app.refresh_all()]]
             MDBottomNavigation:
                 id: bottom_nav
                 on_switch_tabs: app.on_tab_switch(*args)
@@ -102,14 +99,9 @@ ScreenManager:
                         orientation: "vertical"
                         MDBoxLayout:
                             size_hint_y: None
-                            height: dp(56)
+                            height: dp(52)
                             padding: dp(8), 0
                             spacing: dp(6)
-                            MDLabel:
-                                text: "Filtro:"
-                                size_hint_x: None
-                                width: dp(52)
-                                theme_text_color: "Secondary"
                             MDRaisedButton:
                                 text: "Todas"
                                 on_release: app.set_sales_filter("ALL")
@@ -122,6 +114,14 @@ ScreenManager:
                         ScrollView:
                             MDList:
                                 id: sales_list
+
+                MDBottomNavigationItem:
+                    name: "tab_payables"
+                    text: "Pagar"
+                    icon: "arrow-up-bold-box"
+                    ScrollView:
+                        MDList:
+                            id: payables_list
 
                 MDBottomNavigationItem:
                     name: "tab_contacts"
@@ -141,45 +141,16 @@ ScreenManager:
                                 id: contacts_list
 
                 MDBottomNavigationItem:
-                    name: "tab_settings"
-                    text: "Ajustes"
-                    icon: "cog"
+                    name: "tab_reports"
+                    text: "Relat."
+                    icon: "chart-box"
                     ScrollView:
                         MDBoxLayout:
+                            id: reports_box
                             orientation: "vertical"
-                            padding: dp(16)
+                            padding: dp(12)
                             spacing: dp(8)
                             adaptive_height: True
-                            MDLabel:
-                                text: "Dados da empresa/vendedor"
-                                font_style: "H6"
-                                adaptive_height: True
-                            MDTextField:
-                                id: co_name
-                                hint_text: "Nome"
-                            MDTextField:
-                                id: co_document
-                                hint_text: "CPF / CNPJ"
-                            MDTextField:
-                                id: co_phone
-                                hint_text: "Telefone"
-                            MDTextField:
-                                id: co_email
-                                hint_text: "E-mail"
-                            MDTextField:
-                                id: co_address
-                                hint_text: "Endereco"
-                            MDTextField:
-                                id: co_currency
-                                hint_text: "Simbolo da moeda"
-                                text: "R$"
-                            MDTextField:
-                                id: co_footer
-                                hint_text: "Rodape do cupom"
-                            MDRaisedButton:
-                                text: "Salvar"
-                                pos_hint: {"center_x": 0.5}
-                                on_release: app.save_company()
 
     Screen:
         name: "new_sale"
@@ -197,14 +168,13 @@ ScreenManager:
                     MDRaisedButton:
                         id: ns_client_btn
                         text: "Selecionar cliente"
-                        on_release: app.open_client_picker()
+                        on_release: app.open_contact_picker(app.pick_sale_client)
                     MDTextField:
                         id: ns_desc
                         hint_text: "Descricao (opcional)"
                     MDTextField:
                         id: ns_gross
                         hint_text: "Valor bruto (ex: 150,00)"
-                        input_filter: None
                     MDBoxLayout:
                         adaptive_height: True
                         spacing: dp(8)
@@ -235,11 +205,6 @@ ScreenManager:
                         text: "1"
                         disabled: True
                         input_filter: "int"
-                    MDLabel:
-                        id: ns_preview
-                        text: ""
-                        theme_text_color: "Secondary"
-                        adaptive_height: True
                     MDRaisedButton:
                         text: "Registrar venda"
                         pos_hint: {"center_x": 0.5}
@@ -259,6 +224,50 @@ ScreenManager:
                     padding: dp(16)
                     spacing: dp(8)
                     adaptive_height: True
+
+    Screen:
+        name: "settings"
+        MDBoxLayout:
+            orientation: "vertical"
+            MDTopAppBar:
+                title: "Configuracoes"
+                left_action_items: [["arrow-left", lambda x: app.go_main("tab_home")]]
+            ScrollView:
+                MDBoxLayout:
+                    orientation: "vertical"
+                    padding: dp(16)
+                    spacing: dp(8)
+                    adaptive_height: True
+                    MDLabel:
+                        text: "Dados da empresa / vendedor"
+                        font_style: "H6"
+                        adaptive_height: True
+                    MDTextField:
+                        id: co_name
+                        hint_text: "Nome"
+                    MDTextField:
+                        id: co_document
+                        hint_text: "CPF / CNPJ"
+                    MDTextField:
+                        id: co_phone
+                        hint_text: "Telefone"
+                    MDTextField:
+                        id: co_email
+                        hint_text: "E-mail"
+                    MDTextField:
+                        id: co_address
+                        hint_text: "Endereco"
+                    MDTextField:
+                        id: co_currency
+                        hint_text: "Simbolo da moeda"
+                        text: "R$"
+                    MDTextField:
+                        id: co_footer
+                        hint_text: "Rodape do cupom"
+                    MDRaisedButton:
+                        text: "Salvar"
+                        pos_hint: {"center_x": 0.5}
+                        on_release: app.save_company()
 '''
 
 
@@ -271,7 +280,8 @@ class FinGestorApp(MDApp):
         db_path = os.path.join(self.user_data_dir, "fingestor.db")
         self.db = Database(db_path)
         self.dialog = None
-        self.selected_client_id = None
+        self.sale_client_id = None
+        self.payable_supplier_id = None
         self.discount_type = "FIXED"
         self.sales_filter = "ALL"
         self.current_sale_id = None
@@ -281,16 +291,40 @@ class FinGestorApp(MDApp):
     def on_start(self):
         self.build_dashboard()
         self.build_sales()
+        self.build_payables()
         self.build_contacts()
+        self.build_reports()
         self.load_company_form()
 
+    # ---------------- utilitarios de UI ----------------
     TAB_TITLES = {
-        "tab_home": "Inicio", "tab_sales": "Vendas",
-        "tab_contacts": "Contatos", "tab_settings": "Configuracoes",
+        "tab_home": "Inicio", "tab_sales": "Vendas", "tab_payables": "A Pagar",
+        "tab_contacts": "Contatos", "tab_reports": "Relatorios",
     }
 
+    def ids(self):
+        return self.root_widget.ids
+
+    def set_title(self, t):
+        self.root_widget.ids.top_bar.title = t
+
+    def toast(self, msg):
+        try:
+            MDSnackbar(
+                MDLabel(text=str(msg)),
+                y=dp(24), pos_hint={"center_x": 0.5}, size_hint_x=0.9,
+            ).open()
+        except Exception:
+            print("TOAST:", msg)
+
+    def show_message(self, title, text):
+        self.close_dialog()
+        self.dialog = MDDialog(title=title, text=str(text),
+                               buttons=[MDFlatButton(text="Fechar",
+                                        on_release=self.close_dialog)])
+        self.dialog.open()
+
     def on_tab_switch(self, *args):
-        # Assinatura varia entre versoes; procuramos o nome da aba nos argumentos
         name = None
         for a in args:
             if isinstance(a, str) and a in self.TAB_TITLES:
@@ -304,27 +338,13 @@ class FinGestorApp(MDApp):
                     break
         if name:
             self.set_title(self.TAB_TITLES[name])
-        if name == "tab_home":
-            self.build_dashboard()
-        elif name == "tab_sales":
-            self.build_sales()
-        elif name == "tab_contacts":
-            self.build_contacts()
-        elif name == "tab_settings":
-            self.load_company_form()
-
-    # ---------------- utilitarios de UI ----------------
-    def sm(self):
-        return self.root_widget
-
-    def set_title(self, t):
-        self.root_widget.ids.top_bar.title = t
-
-    def toast(self, msg):
-        try:
-            Snackbar(text=msg).open()
-        except Exception:
-            print("TOAST:", msg)
+        {
+            "tab_home": self.build_dashboard,
+            "tab_sales": self.build_sales,
+            "tab_payables": self.build_payables,
+            "tab_contacts": self.build_contacts,
+            "tab_reports": self.build_reports,
+        }.get(name, lambda: None)()
 
     def go_main(self, tab=None):
         self.root_widget.current = "main"
@@ -335,12 +355,18 @@ class FinGestorApp(MDApp):
     def refresh_all(self, *_):
         self.build_dashboard()
         self.build_sales()
+        self.build_payables()
         self.build_contacts()
+        self.build_reports()
 
     def close_dialog(self, *_):
         if self.dialog:
             self.dialog.dismiss()
             self.dialog = None
+
+    def open_settings(self, *_):
+        self.load_company_form()
+        self.root_widget.current = "settings"
 
     # ---------------- Dashboard ----------------
     def build_dashboard(self, *_):
@@ -349,9 +375,8 @@ class FinGestorApp(MDApp):
         recv = self.db.total_receivable()
         overdue = self.db.total_overdue()
         month = self.db.received_this_month()
-
-        grid = MDBoxLayout(orientation="vertical", spacing=dp(10),
-                           adaptive_height=True)
+        pay = self.db.total_payable()
+        balance = recv - pay
 
         def card(value, label, bg):
             c = StatCard()
@@ -360,10 +385,11 @@ class FinGestorApp(MDApp):
             c.md_bg_color = bg
             return c
 
-        grid.add_widget(card(fmt_money(recv), "A receber (em aberto)", (0.90, 0.97, 0.95, 1)))
-        grid.add_widget(card(fmt_money(overdue), "Vencido / atrasado", (0.99, 0.92, 0.92, 1)))
-        grid.add_widget(card(fmt_money(month), "Recebido no mes", (0.93, 0.96, 0.99, 1)))
-        box.add_widget(grid)
+        box.add_widget(card(fmt_money(recv), "A receber (em aberto)", (0.90, 0.97, 0.95, 1)))
+        box.add_widget(card(fmt_money(pay), "A pagar (em aberto)", (0.99, 0.95, 0.90, 1)))
+        box.add_widget(card(fmt_money(balance), "Saldo projetado", (0.93, 0.96, 0.99, 1)))
+        box.add_widget(card(fmt_money(overdue), "Vencido a receber", (0.99, 0.92, 0.92, 1)))
+        box.add_widget(card(fmt_money(month), "Recebido no mes", (0.94, 0.94, 0.97, 1)))
 
         box.add_widget(MDLabel(text="Proximos vencimentos (7 dias)",
                                font_style="H6", adaptive_height=True))
@@ -373,12 +399,11 @@ class FinGestorApp(MDApp):
                                    theme_text_color="Secondary", adaptive_height=True))
         for i in up:
             open_c = i["amount_cents"] - i["paid_cents"]
-            item = TwoLineListItem(
+            box.add_widget(TwoLineListItem(
                 text=f"{i['contact_name']}  -  {fmt_money(open_c)}",
                 secondary_text=f"Venc. {i['due_date']}  [{STATUS_LABEL.get(i['status'],'')}]",
                 on_release=lambda x, sid=i["sale_id"]: self.open_sale(sid),
-            )
-            box.add_widget(item)
+            ))
 
     # ---------------- Vendas ----------------
     def set_sales_filter(self, f):
@@ -388,9 +413,8 @@ class FinGestorApp(MDApp):
     def build_sales(self, *_):
         lst = self.root_widget.ids.sales_list
         lst.clear_widgets()
-        lst.add_widget(OneLineListItem(
-            text="+  Nova venda",
-            on_release=lambda x: self.start_new_sale()))
+        lst.add_widget(OneLineListItem(text="+  Nova venda",
+                       on_release=lambda x: self.start_new_sale()))
         rows = self.db.list_sales()
         if self.sales_filter == "OPEN":
             rows = [r for r in rows if r["open_cents"] > 0]
@@ -399,95 +423,60 @@ class FinGestorApp(MDApp):
         if not rows:
             lst.add_widget(OneLineListItem(text="Nenhuma venda ainda."))
         for r in rows:
-            it = ThreeLineListItem(
+            lst.add_widget(ThreeLineListItem(
                 text=f"{r['contact_name']}  -  {fmt_money(r['net_cents'])}",
                 secondary_text=f"{r['sale_date']}  |  {STATUS_LABEL.get(r['status'],'')}",
                 tertiary_text=f"Em aberto: {fmt_money(r['open_cents'])}",
                 on_release=lambda x, sid=r["id"]: self.open_sale(sid),
-            )
-            lst.add_widget(it)
+            ))
 
-    # ---------------- Nova venda ----------------
     def start_new_sale(self, *_):
-        s = self.root_widget  # ids ficam no widget raiz
-        self.selected_client_id = None
+        ids = self.root_widget.ids
+        self.sale_client_id = None
         self.discount_type = "FIXED"
-        s.ids.ns_client_btn.text = "Selecionar cliente"
-        s.ids.ns_desc.text = ""
-        s.ids.ns_gross.text = ""
-        s.ids.ns_discount.text = "0"
-        s.ids.ns_disc_type.text = "R$"
-        s.ids.ns_installment.active = False
-        s.ids.ns_nparc.text = "1"
-        s.ids.ns_nparc.disabled = True
-        s.ids.ns_preview.text = ""
+        ids.ns_client_btn.text = "Selecionar cliente"
+        ids.ns_desc.text = ""
+        ids.ns_gross.text = ""
+        ids.ns_discount.text = "0"
+        ids.ns_disc_type.text = "R$"
+        ids.ns_installment.active = False
+        ids.ns_nparc.text = "1"
+        ids.ns_nparc.disabled = True
         self.root_widget.current = "new_sale"
 
     def on_installment_toggle(self, active):
-        s = self.root_widget  # ids ficam no widget raiz
-        s.ids.ns_nparc.disabled = not active
+        ids = self.root_widget.ids
+        ids.ns_nparc.disabled = not active
         if not active:
-            s.ids.ns_nparc.text = "1"
+            ids.ns_nparc.text = "1"
 
     def toggle_discount_type(self):
-        s = self.root_widget  # ids ficam no widget raiz
+        ids = self.root_widget.ids
         self.discount_type = "PERCENT" if self.discount_type == "FIXED" else "FIXED"
-        s.ids.ns_disc_type.text = "%" if self.discount_type == "PERCENT" else "R$"
+        ids.ns_disc_type.text = "%" if self.discount_type == "PERCENT" else "R$"
 
-    def open_client_picker(self):
-        contacts = self.db.list_contacts()
-        content = MDBoxLayout(orientation="vertical", adaptive_height=True,
-                              spacing=dp(4), size_hint_y=None)
-        content.height = dp(min(400, 56 * max(1, len(contacts) + 1)))
-        from kivy.uix.scrollview import ScrollView
-        from kivymd.uix.list import MDList
-        ml = MDList()
-        ml.add_widget(OneLineListItem(text="(Sem cliente)",
-                      on_release=lambda x: self.pick_client(None, "Sem cliente")))
-        for c in contacts:
-            ml.add_widget(OneLineListItem(
-                text=c["name"],
-                on_release=lambda x, cid=c["id"], nm=c["name"]: self.pick_client(cid, nm)))
-        sv = ScrollView()
-        sv.add_widget(ml)
-        content.add_widget(sv)
-        self.dialog = MDDialog(title="Selecionar cliente", type="custom",
-                               content_cls=content,
-                               buttons=[MDFlatButton(text="Novo contato",
-                                        on_release=lambda x: (self.close_dialog(),
-                                                              self.open_contact_form())),
-                                        MDFlatButton(text="Fechar",
-                                        on_release=self.close_dialog)])
-        self.dialog.open()
-
-    def pick_client(self, cid, name):
-        self.selected_client_id = cid
+    def pick_sale_client(self, cid, name):
+        self.sale_client_id = cid
         self.root_widget.ids.ns_client_btn.text = name
         self.close_dialog()
 
     def save_sale(self):
-        s = self.root_widget  # ids ficam no widget raiz
-        gross = cents_from_str(s.ids.ns_gross.text)
+        ids = self.root_widget.ids
+        gross = cents_from_str(ids.ns_gross.text)
         if gross <= 0:
             self.toast("Informe um valor bruto valido.")
             return
-        if self.discount_type == "PERCENT":
-            disc_val = cents_from_str(s.ids.ns_discount.text)  # ex 10 -> 1000 (=10,00%)
-        else:
-            disc_val = cents_from_str(s.ids.ns_discount.text)
-        installment = s.ids.ns_installment.active
+        disc_val = cents_from_str(ids.ns_discount.text)
+        installment = ids.ns_installment.active
         try:
-            n = int(s.ids.ns_nparc.text or "1")
+            n = int(ids.ns_nparc.text or "1")
         except ValueError:
             n = 1
         sale_id = self.db.create_sale(
-            contact_id=self.selected_client_id,
-            gross_cents=gross,
-            discount_value_cents=disc_val,
-            discount_type=self.discount_type,
+            contact_id=self.sale_client_id, gross_cents=gross,
+            discount_value_cents=disc_val, discount_type=self.discount_type,
             payment_type="INSTALLMENT" if installment else "CASH",
-            n_installments=n,
-            description=s.ids.ns_desc.text,
+            n_installments=n, description=ids.ns_desc.text,
         )
         self.toast("Venda registrada!")
         self.open_sale(sale_id)
@@ -518,23 +507,22 @@ class FinGestorApp(MDApp):
                                    adaptive_height=True))
         box.add_widget(MDLabel(text=f"Total: {fmt_money(sale['net_cents'])}",
                                font_style="H6", adaptive_height=True))
-
         box.add_widget(MDLabel(text="Parcelas", font_style="Subtitle1",
                                adaptive_height=True))
         for i in sale["installments"]:
             st = Database.installment_status(i)
             open_c = i["amount_cents"] - i["paid_cents"]
-            txt = f"{i['number']}/{len(sale['installments'])}  -  {fmt_money(i['amount_cents'])}"
-            sec = f"Venc. {i['due_date']}  [{STATUS_LABEL.get(st,'')}]  aberto {fmt_money(open_c)}"
-            item = TwoLineListItem(text=txt, secondary_text=sec)
+            item = TwoLineListItem(
+                text=f"{i['number']}/{len(sale['installments'])}  -  {fmt_money(i['amount_cents'])}",
+                secondary_text=f"Venc. {i['due_date']}  [{STATUS_LABEL.get(st,'')}]  aberto {fmt_money(open_c)}")
             if open_c > 0:
                 item.on_release = lambda x, iid=i["id"], oc=open_c: self.open_pay_dialog(iid, oc)
             box.add_widget(item)
 
         btns = MDBoxLayout(adaptive_height=True, spacing=dp(8), padding=(0, dp(12)))
-        btns.add_widget(MDRaisedButton(text="Gerar cupom (PDF)",
+        btns.add_widget(MDRaisedButton(text="Cupom PDF",
                         on_release=lambda x: self.make_receipt("pdf")))
-        btns.add_widget(MDRaisedButton(text="Imagem (PNG)",
+        btns.add_widget(MDRaisedButton(text="Cupom PNG",
                         on_release=lambda x: self.make_receipt("png")))
         box.add_widget(btns)
 
@@ -545,9 +533,7 @@ class FinGestorApp(MDApp):
                               size_hint_y=None, height=dp(90), padding=dp(8))
         content.add_widget(field)
         self.dialog = MDDialog(
-            title="Dar baixa",
-            type="custom",
-            content_cls=content,
+            title="Dar baixa", type="custom", content_cls=content,
             buttons=[
                 MDFlatButton(text="Total",
                              on_release=lambda x: self.do_pay(installment_id, open_cents)),
@@ -555,8 +541,7 @@ class FinGestorApp(MDApp):
                                on_release=lambda x: self.do_pay(installment_id,
                                                                 cents_from_str(field.text))),
                 MDFlatButton(text="Cancelar", on_release=self.close_dialog),
-            ],
-        )
+            ])
         self.dialog.open()
 
     def do_pay(self, installment_id, amount_cents):
@@ -568,47 +553,242 @@ class FinGestorApp(MDApp):
         self.toast("Baixa registrada!")
         self.render_sale_detail()
 
+    # ---------------- Cupom (com feedback visivel) ----------------
     def make_receipt(self, fmt):
-        sale = self.db.get_sale(self.current_sale_id)
-        company = self.db.get_company()
-        out_dir = os.path.join(self.user_data_dir, "cupons")
         try:
+            sale = self.db.get_sale(self.current_sale_id)
+            company = self.db.get_company()
+            out_dir = os.path.join(self.user_data_dir, "cupons")
             paths = receipt.save_receipt(sale, company, out_dir, fmt=fmt)
         except Exception as e:
-            self.toast(f"Erro ao gerar cupom: {e}")
+            import traceback
+            traceback.print_exc()
+            self.show_message("Erro ao gerar cupom", f"{type(e).__name__}: {e}")
             return
         path = paths.get(fmt) or next(iter(paths.values()))
         mime = "application/pdf" if fmt == "pdf" else "image/png"
-        shared = receipt.share_file(path, mime=mime)
-        if not shared:
-            self.toast(f"Cupom salvo em: {path}")
+        self._show_doc_result("Cupom gerado", path, mime)
+
+    def _show_doc_result(self, title, path, mime):
+        self.close_dialog()
+        self.dialog = MDDialog(
+            title=title,
+            text=f"Arquivo salvo em:\n{path}\n\nToque em Compartilhar para enviar "
+                 f"pelo WhatsApp, e-mail, etc.",
+            buttons=[
+                MDRaisedButton(text="Compartilhar",
+                               on_release=lambda x: self._do_share(path, mime)),
+                MDFlatButton(text="Fechar", on_release=self.close_dialog),
+            ])
+        self.dialog.open()
+
+    def _do_share(self, path, mime):
+        ok = receipt.share_file(path, mime=mime)
+        if not ok:
+            self.toast("Compartilhamento indisponivel aqui; arquivo salvo no aparelho.")
+
+    # ---------------- Contas a pagar ----------------
+    def build_payables(self, *_):
+        lst = self.root_widget.ids.payables_list
+        lst.clear_widgets()
+        lst.add_widget(OneLineListItem(text="+  Nova conta a pagar",
+                       on_release=lambda x: self.open_payable_form()))
+        rows = self.db.list_payables()
+        if not rows:
+            lst.add_widget(OneLineListItem(text="Nenhuma conta a pagar."))
+        for p in rows:
+            who = p["contact_name"] or (p["description"] or "Conta")
+            lst.add_widget(ThreeLineListItem(
+                text=f"{who}  -  {fmt_money(p['amount_cents'])}",
+                secondary_text=f"Venc. {p['due_date']}  |  {STATUS_LABEL.get(p['status'],'')}",
+                tertiary_text=f"Em aberto: {fmt_money(p['open_cents'])}  {('· '+p['description']) if p['contact_name'] and p['description'] else ''}",
+                on_release=lambda x, pid=p["id"]: self.open_payable_detail(pid),
+            ))
+
+    def open_payable_form(self, *_):
+        self.payable_supplier_id = None
+        f_desc = MDTextField(hint_text="Descricao*")
+        f_amount = MDTextField(hint_text="Valor (ex: 200,00)")
+        f_due = MDTextField(hint_text="Vencimento (AAAA-MM-DD)", text=today_iso())
+        f_cat = MDTextField(hint_text="Categoria (opcional)")
+        sup_btn = MDRaisedButton(text="Fornecedor (opcional)")
+        sup_btn.bind(on_release=lambda x: self.open_contact_picker(
+            lambda cid, nm: self._pick_supplier(cid, nm, sup_btn)))
+        content = MDBoxLayout(orientation="vertical", adaptive_height=True,
+                              size_hint_y=None, spacing=dp(6), padding=dp(6))
+        for w in (sup_btn, f_desc, f_amount, f_due, f_cat):
+            content.add_widget(w)
+        content.height = dp(320)
+
+        def save(*_):
+            amt = cents_from_str(f_amount.text)
+            if not f_desc.text.strip() or amt <= 0:
+                self.toast("Informe descricao e valor validos.")
+                return
+            self.db.add_payable(description=f_desc.text.strip(), amount_cents=amt,
+                                due_date=f_due.text.strip() or today_iso(),
+                                contact_id=self.payable_supplier_id,
+                                category=f_cat.text.strip())
+            self.close_dialog()
+            self.build_payables()
+            self.build_dashboard()
+            self.toast("Conta a pagar registrada!")
+
+        self.dialog = MDDialog(title="Nova conta a pagar", type="custom",
+                               content_cls=content,
+                               buttons=[MDRaisedButton(text="Salvar", on_release=save),
+                                        MDFlatButton(text="Cancelar",
+                                                     on_release=self.close_dialog)])
+        self.dialog.open()
+
+    def _pick_supplier(self, cid, name, btn):
+        self.payable_supplier_id = cid
+        btn.text = name or "Fornecedor (opcional)"
+        self.close_dialog()
+
+    def open_payable_detail(self, pid):
+        p = self.db.get_payable(pid)
+        if not p:
+            return
+        open_c = p["amount_cents"] - p["paid_cents"]
+        field = MDTextField(hint_text="Valor da baixa",
+                            text=f"{max(open_c,0)/100:.2f}".replace(".", ","))
+        content = MDBoxLayout(orientation="vertical", adaptive_height=True,
+                              size_hint_y=None, height=dp(130), padding=dp(8), spacing=dp(6))
+        content.add_widget(MDLabel(
+            text=f"{p['description']}\nTotal {fmt_money(p['amount_cents'])} | "
+                 f"aberto {fmt_money(open_c)}",
+            adaptive_height=True))
+        content.add_widget(field)
+        buttons = [MDFlatButton(text="Excluir",
+                                on_release=lambda x: self._del_payable(pid))]
+        if open_c > 0:
+            buttons += [
+                MDFlatButton(text="Baixa total",
+                             on_release=lambda x: self._pay_payable(pid, open_c)),
+                MDRaisedButton(text="Confirmar",
+                               on_release=lambda x: self._pay_payable(pid, cents_from_str(field.text))),
+            ]
+        buttons.append(MDFlatButton(text="Fechar", on_release=self.close_dialog))
+        self.dialog = MDDialog(title="Conta a pagar", type="custom",
+                               content_cls=content, buttons=buttons)
+        self.dialog.open()
+
+    def _pay_payable(self, pid, amount):
+        if amount <= 0:
+            self.toast("Valor invalido.")
+            return
+        self.db.pay_payable(pid, amount)
+        self.close_dialog()
+        self.build_payables()
+        self.build_dashboard()
+        self.toast("Baixa registrada!")
+
+    def _del_payable(self, pid):
+        self.db.delete_payable(pid)
+        self.close_dialog()
+        self.build_payables()
+        self.build_dashboard()
+        self.toast("Conta excluida.")
+
+    # ---------------- Relatorios ----------------
+    def build_reports(self, *_):
+        box = self.root_widget.ids.reports_box
+        box.clear_widgets()
+        pv = self.db.payable_vs_receivable()
+        summ = self.db.sales_summary()
+
+        box.add_widget(MDLabel(text="Resumo financeiro", font_style="H6",
+                               adaptive_height=True))
+        for label, val in (
+            ("A receber (em aberto)", pv["receivable_cents"]),
+            ("A pagar (em aberto)", pv["payable_cents"]),
+            ("Saldo projetado", pv["balance_cents"]),
+        ):
+            box.add_widget(TwoLineListItem(text=fmt_money(val), secondary_text=label))
+
+        box.add_widget(MDLabel(
+            text=f"Vendas: {summ['count']}  |  Total {fmt_money(summ['net_cents'])}  |  "
+                 f"Ticket medio {fmt_money(summ['avg_cents'])}",
+            theme_text_color="Secondary", adaptive_height=True))
+
+        box.add_widget(MDLabel(text="Vendas por cliente", font_style="H6",
+                               adaptive_height=True))
+        rows = self.db.sales_by_client()
+        if not rows:
+            box.add_widget(MDLabel(text="Sem vendas ainda.",
+                                   theme_text_color="Secondary", adaptive_height=True))
+        for r in rows:
+            box.add_widget(ThreeLineListItem(
+                text=f"{r['name']}  -  {fmt_money(r['net_cents'])}",
+                secondary_text=f"{r['count']} venda(s)  |  em aberto {fmt_money(r['open_cents'])}",
+                tertiary_text=f"recebido {fmt_money(r['paid_cents'])}"))
+
+        btns = MDBoxLayout(adaptive_height=True, spacing=dp(8), padding=(0, dp(10)))
+        btns.add_widget(MDRaisedButton(text="Exportar PDF",
+                        on_release=lambda x: self.export_report("pdf")))
+        btns.add_widget(MDRaisedButton(text="Exportar PNG",
+                        on_release=lambda x: self.export_report("png")))
+        box.add_widget(btns)
+
+    def export_report(self, fmt):
+        try:
+            company = self.db.get_company()
+            pv = self.db.payable_vs_receivable()
+            summ = self.db.sales_summary()
+            sections = [
+                ("Resumo financeiro", [
+                    ("A receber (em aberto)", fmt_money(pv["receivable_cents"])),
+                    ("A pagar (em aberto)", fmt_money(pv["payable_cents"])),
+                    ("Saldo projetado", fmt_money(pv["balance_cents"])),
+                    ("Vendas (qtd)", str(summ["count"])),
+                    ("Total vendido", fmt_money(summ["net_cents"])),
+                    ("Ticket medio", fmt_money(summ["avg_cents"])),
+                ]),
+                ("Vendas por cliente", [
+                    (f"{r['name']} ({r['count']})",
+                     f"{fmt_money(r['net_cents'])}  ab.{fmt_money(r['open_cents'])}")
+                    for r in self.db.sales_by_client()
+                ]),
+            ]
+            out_dir = os.path.join(self.user_data_dir, "relatorios")
+            paths = receipt.save_report("Relatorio Financeiro", company, sections,
+                                        out_dir, "relatorio",
+                                        subtitle=f"Gerado em {today_iso()}", fmt=fmt)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.show_message("Erro ao gerar relatorio", f"{type(e).__name__}: {e}")
+            return
+        path = paths.get(fmt) or next(iter(paths.values()))
+        mime = "application/pdf" if fmt == "pdf" else "image/png"
+        self._show_doc_result("Relatorio gerado", path, mime)
 
     # ---------------- Contatos ----------------
     def build_contacts(self, *_):
         lst = self.root_widget.ids.contacts_list
         search = self.root_widget.ids.contact_search.text
         lst.clear_widgets()
+        lst.add_widget(OneLineListItem(text="+  Novo contato",
+                       on_release=lambda x: self.open_contact_form()))
         contacts = self.db.list_contacts(search=search)
         if not contacts:
-            lst.add_widget(OneLineListItem(text="Nenhum contato. Use o botao Novo."))
+            lst.add_widget(OneLineListItem(text="Nenhum contato."))
         for c in contacts:
             tot = self.db.contact_totals(c["id"])
-            it = TwoLineListItem(
+            lst.add_widget(TwoLineListItem(
                 text=c["name"],
                 secondary_text=f"{c.get('phone') or ''}  |  Devedor: {fmt_money(tot['owed_cents'])}",
                 on_release=lambda x, cid=c["id"]: self.open_contact_form(cid),
-            )
-            lst.add_widget(it)
-        lst.add_widget(OneLineListItem(text="+  Novo contato",
-                       on_release=lambda x: self.open_contact_form()))
+            ))
 
     def open_contact_form(self, cid=None):
         data = self.db.get_contact(cid) if cid else {}
-        f_name = MDTextField(hint_text="Nome*", text=data.get("name", "") if data else "")
-        f_phone = MDTextField(hint_text="Telefone", text=data.get("phone", "") if data else "")
-        f_email = MDTextField(hint_text="E-mail", text=data.get("email", "") if data else "")
-        f_doc = MDTextField(hint_text="CPF/CNPJ", text=data.get("document", "") if data else "")
-        f_addr = MDTextField(hint_text="Endereco", text=data.get("address", "") if data else "")
+        f_name = MDTextField(hint_text="Nome*", text=(data.get("name", "") if data else ""))
+        f_phone = MDTextField(hint_text="Telefone", text=(data.get("phone", "") if data else ""))
+        f_email = MDTextField(hint_text="E-mail", text=(data.get("email", "") if data else ""))
+        f_doc = MDTextField(hint_text="CPF/CNPJ", text=(data.get("document", "") if data else ""))
+        f_addr = MDTextField(hint_text="Endereco", text=(data.get("address", "") if data else ""))
         content = MDBoxLayout(orientation="vertical", adaptive_height=True,
                               size_hint_y=None, spacing=dp(4), padding=dp(4))
         for w in (f_name, f_phone, f_email, f_doc, f_addr):
@@ -632,9 +812,8 @@ class FinGestorApp(MDApp):
         buttons = [MDRaisedButton(text="Salvar", on_release=save),
                    MDFlatButton(text="Fechar", on_release=self.close_dialog)]
         if cid:
-            buttons.insert(0, MDFlatButton(
-                text="Excluir",
-                on_release=lambda x: self.try_delete_contact(cid)))
+            buttons.insert(0, MDFlatButton(text="Excluir",
+                           on_release=lambda x: self.try_delete_contact(cid)))
         self.dialog = MDDialog(title="Contato", type="custom",
                                content_cls=content, buttons=buttons)
         self.dialog.open()
@@ -646,8 +825,32 @@ class FinGestorApp(MDApp):
             self.toast("Contato excluido.")
         else:
             self.db.archive_contact(cid, True)
-            self.toast("Tem vendas: contato arquivado (nao excluido).")
+            self.toast("Tem vendas: contato arquivado.")
         self.build_contacts()
+
+    # Picker de contato reutilizavel (vendas e fornecedores)
+    def open_contact_picker(self, on_pick):
+        contacts = self.db.list_contacts()
+        ml = MDList()
+        ml.add_widget(OneLineListItem(text="(Nenhum)",
+                      on_release=lambda x: on_pick(None, "")))
+        for c in contacts:
+            ml.add_widget(OneLineListItem(
+                text=c["name"],
+                on_release=lambda x, cid=c["id"], nm=c["name"]: on_pick(cid, nm)))
+        sv = ScrollView()
+        sv.add_widget(ml)
+        content = MDBoxLayout(orientation="vertical", size_hint_y=None,
+                              height=dp(min(400, 56 * (len(contacts) + 2))))
+        content.add_widget(sv)
+        self.dialog = MDDialog(title="Selecionar contato", type="custom",
+                               content_cls=content,
+                               buttons=[MDFlatButton(text="Novo contato",
+                                        on_release=lambda x: (self.close_dialog(),
+                                                              self.open_contact_form())),
+                                        MDFlatButton(text="Fechar",
+                                        on_release=self.close_dialog)])
+        self.dialog.open()
 
     # ---------------- Configuracoes ----------------
     def load_company_form(self, *_):
@@ -667,9 +870,9 @@ class FinGestorApp(MDApp):
             name=ids.co_name.text, document=ids.co_document.text,
             phone=ids.co_phone.text, email=ids.co_email.text,
             address=ids.co_address.text, currency=ids.co_currency.text or "R$",
-            receipt_footer=ids.co_footer.text, logo_path=None,
-        )
+            receipt_footer=ids.co_footer.text, logo_path=None)
         self.toast("Configuracoes salvas!")
+        self.go_main("tab_home")
 
 
 if __name__ == "__main__":
