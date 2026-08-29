@@ -35,8 +35,9 @@ class StatCard(MDCard):
 from db import Database, fmt_money, cents_from_str, STATUS_LABEL, today_iso
 import receipt
 
-# Janela confortavel no desktop (ignorado no Android)
-if os.environ.get("KIVY_BUILD") != "android":
+# Tamanho de janela SOMENTE no desktop; no celular a tela e usada por completo.
+from kivy.utils import platform as _platform
+if _platform not in ("android", "ios"):
     Window.size = (400, 720)
 
 
