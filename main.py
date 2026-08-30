@@ -694,7 +694,7 @@ class FinGestorApp(MDApp):
         try:
             sale = self.db.get_sale(self.current_sale_id)
             company = self.db.get_company()
-            out_dir = os.path.join(self.user_data_dir, "cupons")
+            out_dir = receipt.app_docs_dir("cupons", self.user_data_dir)
             paths = receipt.save_receipt(sale, company, out_dir, fmt=fmt)
         except Exception as e:
             import traceback
@@ -877,7 +877,7 @@ class FinGestorApp(MDApp):
                     for r in self.db.sales_by_client()
                 ]),
             ]
-            out_dir = os.path.join(self.user_data_dir, "relatorios")
+            out_dir = receipt.app_docs_dir("relatorios", self.user_data_dir)
             paths = receipt.save_report("Relatorio Financeiro", company, sections,
                                         out_dir, "relatorio",
                                         subtitle=f"Gerado em {today_iso()}", fmt=fmt)
@@ -999,8 +999,7 @@ class FinGestorApp(MDApp):
     def do_backup(self):
         import datetime
         try:
-            out_dir = os.path.join(self.user_data_dir, "backups")
-            os.makedirs(out_dir, exist_ok=True)
+            out_dir = receipt.app_docs_dir("backups", self.user_data_dir)
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             dest = os.path.join(out_dir, f"fingestor_backup_{ts}.db")
             self.db.backup_to(dest)

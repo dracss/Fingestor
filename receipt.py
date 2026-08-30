@@ -227,51 +227,94 @@ def save_report(title, company, sections, out_dir, filename, subtitle="", fmt="p
 # Compartilhamento (Android)
 # ---------------------------------------------------------------------------
 
-def share_file(path, mime="application/pdf", text="Segue seu comprovante."):
-    """Abre o share sheet do Android via FileProvider.
-    Retorna (True, "") em sucesso, ou (False, mensagem_de_erro) em falha
-    (inclusive no desktop, onde jnius nao existe)."""
+def app_docs_dir(sub, fallback):
+    """Diretorio de saida para arquivos compartilhaveis.
+    No Android usa getExternalFilesDir (coberto pelo FileProvider e mais
+    acessivel); no desktop usa 'fallback'."""
+    base = fallback
     try:
-        from jnius import autoclass, cast
+        from jnius import autoclass
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
-        Intent = autoclass("android.content.Intent")
-        File = autoclass("java.io.File")
-        String = autoclass("java.lang.String")
+        ctx = PythonActivity.mActivity
+        f = ctx.getExternalFilesDir(None)
+        if f is not None:
+            base = f.getAbsolutePath()
+    except Exception:
+        pass
+    d = os.path.join(base, sub)
+    os.makedirs(d, exist_ok=True)
+    return d
 
-        activity = PythonActivity.mActivity
-        context = activity.getApplicationContext()
-        jfile = File(path)
-        authority = str(context.getPackageName()) + ".fileprovider"
 
-        # A classe que o python-for-android realmente embute e registra no
-        # manifesto e a GenericFileProvider; tentamos ela primeiro.
-        uri = None
-        last = None
-        for cls in ("org.kivy.android.GenericFileProvider",
-                    "androidx.core.content.FileProvider",
-                    "android.support.v4.content.FileProvider"):
-            try:
-                FP = autoclass(cls)
-                uri = FP.getUriForFile(context, authority, jfile)
-                break
-            except Exception as e:
-                last = e
-        if uri is None:
-            raise RuntimeError(f"FileProvider falhou (authority={authority}): {last}")
+def _share_via_provider(path, mime, text):
+    from jnius import autoclass, cast
+    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    Intent = autoclass("android.content.Intent")
+    File = autoclass("java.io.File")
+    String = autoclass("java.lang.String")
+    activity = PythonActivity.mActivity
+    context = activity.getApplicationContext()
+    authority = str(context.getPackageName()) + ".fileprovider"
+    jfile = File(path)
+    errs = []
+    uri = None
+    for cls in ("org.kivy.android.GenericFileProvider",
+                "androidx.core.content.FileProvider",
+                "android.support.v4.content.FileProvider"):
+        try:
+            FP = autoclass(cls)
+            uri = FP.getUriForFile(context, authority, jfile)
+            break
+        except Exception as e:
+            errs.append(f"{cls.split('.')[-1]}={type(e).__name__}")
+    if uri is None:
+        raise RuntimeError("FileProvider: " + ", ".join(errs))
+    intent = Intent(Intent.ACTION_SEND)
+    intent.setType(mime)
+    intent.putExtra(Intent.EXTRA_STREAM, cast("android.os.Parcelable", uri))
+    intent.putExtra(Intent.EXTRA_TEXT, cast("java.lang.CharSequence", String(text)))
+    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    title = cast("java.lang.CharSequence", String("Compartilhar"))
+    chooser = Intent.createChooser(intent, title)
+    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    activity.startActivity(chooser)
 
-        intent = Intent(Intent.ACTION_SEND)
-        intent.setType(mime)
-        intent.putExtra(Intent.EXTRA_STREAM, cast("android.os.Parcelable", uri))
-        intent.putExtra(Intent.EXTRA_TEXT, cast("java.lang.CharSequence", String(text)))
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 
-        title = cast("java.lang.CharSequence", String("Compartilhar"))
-        chooser = Intent.createChooser(intent, title)
-        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        activity.startActivity(chooser)
-        return True, ""
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return False, f"{type(e).__name__}: {e}"
+def _share_via_fromfile(path, mime, text):
+    from jnius import autoclass, cast
+    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    Intent = autoclass("android.content.Intent")
+    Uri = autoclass("android.net.Uri")
+    File = autoclass("java.io.File")
+    String = autoclass("java.lang.String")
+    # Desativa o StrictMode para permitir file:// (evita FileUriExposedException)
+    StrictMode = autoclass("android.os.StrictMode")
+    VmBuilder = autoclass("android.os.StrictMode$VmPolicy$Builder")
+    StrictMode.setVmPolicy(VmBuilder().build())
+    activity = PythonActivity.mActivity
+    uri = Uri.fromFile(File(path))
+    intent = Intent(Intent.ACTION_SEND)
+    intent.setType(mime)
+    intent.putExtra(Intent.EXTRA_STREAM, cast("android.os.Parcelable", uri))
+    intent.putExtra(Intent.EXTRA_TEXT, cast("java.lang.CharSequence", String(text)))
+    title = cast("java.lang.CharSequence", String("Compartilhar"))
+    chooser = Intent.createChooser(intent, title)
+    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    activity.startActivity(chooser)
+
+
+def share_file(path, mime="application/pdf", text="Segue seu comprovante."):
+    """Abre o share sheet do Android. Tenta FileProvider e, se falhar,
+    usa file:// com StrictMode desativado. Retorna (True, '') ou
+    (False, mensagem_detalhada)."""
+    errors = []
+    for strategy in (_share_via_provider, _share_via_fromfile):
+        try:
+            strategy(path, mime, text)
+            return True, ""
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            errors.append(f"{strategy.__name__}: {type(e).__name__}: {e}")
+    return False, " || ".join(errors) if errors else "jnius indisponivel (desktop)"
