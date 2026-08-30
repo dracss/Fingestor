@@ -126,8 +126,11 @@ CREATE INDEX IF NOT EXISTS idx_pay_due ON payables(due_date);
 class Database:
     def __init__(self, path):
         self.path = path
-        new = not os.path.exists(path)
-        self.conn = sqlite3.connect(path)
+        self._open()
+
+    def _open(self):
+        new = not os.path.exists(self.path)
+        self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
@@ -512,6 +515,67 @@ class Database:
         pay = self.total_payable()
         return {"receivable_cents": recv, "payable_cents": pay,
                 "balance_cents": recv - pay}
+
+    # ----- Contas a receber (parcelas em aberto) -----
+    def list_open_installments(self, ref=None):
+        ref = ref or today_iso()
+        rows = self.conn.execute("""
+            SELECT i.*, s.contact_id AS contact_id, s.id AS sale_id
+            FROM installments i JOIN sales s ON s.id = i.sale_id
+            WHERE i.amount_cents > i.paid_cents
+            ORDER BY i.due_date ASC
+        """).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            c = self.get_contact(d["contact_id"]) if d["contact_id"] else None
+            d["contact_name"] = c["name"] if c else "Sem cliente"
+            d["open_cents"] = d["amount_cents"] - d["paid_cents"]
+            d["status"] = self.installment_status(d, ref)
+            out.append(d)
+        return out
+
+    # ----- Backup / restauracao -----
+    def backup_to(self, dest_path):
+        """Copia o banco (consistente) para dest_path. Retorna dest_path."""
+        import shutil
+        self.conn.commit()
+        try:
+            # backup nativo do sqlite (garante consistencia)
+            dst = sqlite3.connect(dest_path)
+            with dst:
+                self.conn.backup(dst)
+            dst.close()
+        except Exception:
+            shutil.copyfile(self.path, dest_path)
+        return dest_path
+
+    def restore_from(self, src_path):
+        """Valida src_path como banco do FinGestor e substitui o atual.
+        Retorna (True, '') ou (False, motivo)."""
+        import shutil
+        # valida
+        try:
+            test = sqlite3.connect(src_path)
+            names = {r[0] for r in test.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            test.close()
+        except Exception as e:
+            return False, f"Arquivo invalido: {e}"
+        required = {"company", "contacts", "sales", "installments"}
+        if not required.issubset(names):
+            return False, "Este arquivo nao parece um backup do FinGestor."
+        try:
+            self.conn.close()
+            shutil.copyfile(src_path, self.path)
+            self._open()
+            return True, ""
+        except Exception as e:
+            try:
+                self._open()
+            except Exception:
+                pass
+            return False, str(e)
 
     def close(self):
         self.conn.close()

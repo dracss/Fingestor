@@ -243,10 +243,12 @@ def share_file(path, mime="application/pdf", text="Segue seu comprovante."):
         jfile = File(path)
         authority = str(context.getPackageName()) + ".fileprovider"
 
-        # Tenta a FileProvider do androidx e, se falhar, a do support antigo.
+        # A classe que o python-for-android realmente embute e registra no
+        # manifesto e a GenericFileProvider; tentamos ela primeiro.
         uri = None
         last = None
-        for cls in ("androidx.core.content.FileProvider",
+        for cls in ("org.kivy.android.GenericFileProvider",
+                    "androidx.core.content.FileProvider",
                     "android.support.v4.content.FileProvider"):
             try:
                 FP = autoclass(cls)

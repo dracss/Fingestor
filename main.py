@@ -268,6 +268,36 @@ ScreenManager:
                         text: "Salvar"
                         pos_hint: {"center_x": 0.5}
                         on_release: app.save_company()
+                    MDLabel:
+                        text: "Backup e restauracao"
+                        font_style: "H6"
+                        adaptive_height: True
+                        padding: 0, dp(8)
+                    MDLabel:
+                        text: "Faca um backup e envie para o seu Google Drive, e-mail ou WhatsApp. Para restaurar, baixe o arquivo e escolha 'Restaurar backup'."
+                        theme_text_color: "Secondary"
+                        adaptive_height: True
+                    MDBoxLayout:
+                        adaptive_height: True
+                        spacing: dp(8)
+                        padding: 0, dp(6)
+                        MDRaisedButton:
+                            text: "Fazer backup"
+                            on_release: app.do_backup()
+                        MDFlatButton:
+                            text: "Restaurar backup"
+                            on_release: app.do_restore()
+
+    Screen:
+        name: "receivables"
+        MDBoxLayout:
+            orientation: "vertical"
+            MDTopAppBar:
+                title: "Contas a receber"
+                left_action_items: [["arrow-left", lambda x: app.go_main("tab_home")]]
+            ScrollView:
+                MDList:
+                    id: receivables_list
 
     Screen:
         name: "contact_form"
@@ -467,6 +497,13 @@ class FinGestorApp(MDApp):
         box.add_widget(card(fmt_money(overdue), "Vencido a receber", (0.99, 0.92, 0.92, 1)))
         box.add_widget(card(fmt_money(month), "Recebido no mes", (0.94, 0.94, 0.97, 1)))
 
+        actions = MDBoxLayout(adaptive_height=True, spacing=dp(8), padding=(0, dp(6)))
+        actions.add_widget(MDRaisedButton(text="Contas a receber",
+                           on_release=lambda x: self.open_receivables()))
+        actions.add_widget(MDFlatButton(text="Contas a pagar",
+                           on_release=lambda x: self.go_main("tab_payables")))
+        box.add_widget(actions)
+
         box.add_widget(MDLabel(text="Proximos vencimentos (7 dias)",
                                font_style="H6", adaptive_height=True))
         up = self.db.upcoming(days=7)
@@ -627,7 +664,30 @@ class FinGestorApp(MDApp):
         self.db.pay_installment(installment_id, amount_cents)
         self.close_dialog()
         self.toast("Baixa registrada!")
-        self.render_sale_detail()
+        self.build_dashboard()
+        if self.root_widget.current == "sale_detail":
+            self.render_sale_detail()
+        elif self.root_widget.current == "receivables":
+            self.build_receivables()
+
+    # ---------------- Contas a receber (baixa rapida) ----------------
+    def open_receivables(self, *_):
+        self.build_receivables()
+        self.root_widget.current = "receivables"
+
+    def build_receivables(self, *_):
+        lst = self.root_widget.ids.receivables_list
+        lst.clear_widgets()
+        rows = self.db.list_open_installments()
+        if not rows:
+            lst.add_widget(OneLineListItem(text="Nada a receber em aberto."))
+        for i in rows:
+            lst.add_widget(ThreeLineListItem(
+                text=f"{i['contact_name']}  -  {fmt_money(i['open_cents'])}",
+                secondary_text=f"Venc. {i['due_date']}  [{STATUS_LABEL.get(i['status'],'')}]",
+                tertiary_text=f"Venda #{i['sale_id']:05d}  parcela {i['number']}",
+                on_release=lambda x, iid=i["id"], oc=i["open_cents"]: self.open_pay_dialog(iid, oc),
+            ))
 
     # ---------------- Cupom (com feedback visivel) ----------------
     def make_receipt(self, fmt):
@@ -934,6 +994,87 @@ class FinGestorApp(MDApp):
             receipt_footer=ids.co_footer.text, logo_path=None)
         self.toast("Configuracoes salvas!")
         self.go_main("tab_home")
+
+    # ---------------- Backup / restauracao ----------------
+    def do_backup(self):
+        import datetime
+        try:
+            out_dir = os.path.join(self.user_data_dir, "backups")
+            os.makedirs(out_dir, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            dest = os.path.join(out_dir, f"fingestor_backup_{ts}.db")
+            self.db.backup_to(dest)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.show_message("Erro no backup", f"{type(e).__name__}: {e}")
+            return
+        self._show_doc_result("Backup criado", dest, "application/octet-stream")
+
+    def do_restore(self):
+        # Abre o seletor de arquivos do Android (SAF) e restaura o backup.
+        try:
+            from jnius import autoclass
+            from android import activity  # p4a
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            Intent = autoclass("android.content.Intent")
+            intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            intent.addCategory(Intent.CATEGORY_OPENABLE)
+            intent.setType("*/*")
+            self._restore_req = 4242
+            activity.bind(on_activity_result=self._on_restore_result)
+            PythonActivity.mActivity.startActivityForResult(intent, self._restore_req)
+        except Exception as e:
+            self.show_message(
+                "Restaurar backup",
+                "A selecao de arquivo so funciona no aparelho Android.\n\n"
+                f"Detalhe: {type(e).__name__}: {e}")
+
+    def _on_restore_result(self, request_code, result_code, intent):
+        from kivy.clock import Clock
+        try:
+            from android import activity
+            activity.unbind(on_activity_result=self._on_restore_result)
+        except Exception:
+            pass
+        if intent is None or request_code != getattr(self, "_restore_req", None):
+            return
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            act = PythonActivity.mActivity
+            uri = intent.getData()
+            if uri is None:
+                return
+            resolver = act.getContentResolver()
+            istream = resolver.openInputStream(uri)
+            tmp = os.path.join(self.user_data_dir, "_restore_tmp.db")
+            with open(tmp, "wb") as f:
+                buf = bytearray(8192)
+                n = istream.read(buf)
+                while n is not None and n != -1:
+                    if n > 0:
+                        f.write(bytes(buf[:n]))
+                    n = istream.read(buf)
+            istream.close()
+            ok, err = self.db.restore_from(tmp)
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            Clock.schedule_once(lambda dt: self._after_restore(ok, err), 0)
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            Clock.schedule_once(lambda dt: self.show_message("Erro na restauracao", msg), 0)
+
+    def _after_restore(self, ok, err):
+        if ok:
+            self.refresh_all()
+            self.load_company_form()
+            self.go_main("tab_home")
+            self.toast("Backup restaurado!")
+        else:
+            self.show_message("Nao foi possivel restaurar", err or "Arquivo invalido.")
 
 
 if __name__ == "__main__":
