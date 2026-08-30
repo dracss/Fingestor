@@ -43,6 +43,13 @@ jobs:
       - name: Build APK (debug)
         run: |
           export BUILDOZER_WARN_ON_ROOT=0
+          yes | buildozer android debug || true
+          RECIPE=".buildozer/android/platform/python-for-android/pythonforandroid/recipes/openssl/__init__.py"
+          if [ -f "$RECIPE" ]; then
+            echo "Aplicando espelho do OpenSSL..."
+            sed -i -E "s#https://www\.openssl\.org/source/openssl-(\{[a-z_]+\})\.tar\.gz#https://github.com/openssl/openssl/releases/download/openssl-\1/openssl-\1.tar.gz#g" "$RECIPE"
+            grep -n "releases/download/openssl" "$RECIPE" || echo "aviso: URL nao encontrada"
+          fi
           yes | buildozer android debug
 
       - name: Upload APK artifact
