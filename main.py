@@ -719,12 +719,14 @@ class FinGestorApp(MDApp):
         self.dialog.open()
 
     def _do_share(self, path, mime):
-        ok, err = receipt.share_file(path, mime=mime)
-        if not ok:
+        ok, info = receipt.share_file(path, mime=mime)
+        if ok:
+            self.toast(info)
+        else:
             self.show_message(
                 "Nao foi possivel compartilhar",
                 f"O arquivo esta salvo no aparelho em:\n{path}\n\n"
-                f"Detalhe tecnico (para suporte):\n{err}")
+                f"Detalhe tecnico (para suporte):\n{info}")
 
     # ---------------- Contas a pagar ----------------
     def build_payables(self, *_):

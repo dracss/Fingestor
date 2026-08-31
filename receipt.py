@@ -260,6 +260,7 @@ def _share_via_mediastore(path, mime, text):
     Downloads = autoclass("android.provider.MediaStore$Downloads")
     String = autoclass("java.lang.String")
 
+    Integer = autoclass("java.lang.Integer")
     activity = PythonActivity.mActivity
     resolver = activity.getContentResolver()
     name = os.path.basename(path)
@@ -268,6 +269,7 @@ def _share_via_mediastore(path, mime, text):
     values.put("_display_name", name)
     values.put("mime_type", mime)
     values.put("relative_path", "Download/FinGestor")
+    values.put("is_pending", Integer(1))          # marca como "em gravacao"
     uri = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values)
     if uri is None:
         raise RuntimeError("MediaStore insert retornou nulo")
@@ -279,6 +281,10 @@ def _share_via_mediastore(path, mime, text):
     ostream.flush()
     ostream.close()
 
+    done = ContentValues()
+    done.put("is_pending", Integer(0))            # finaliza -> arquivo pronto
+    resolver.update(uri, done, None, None)
+
     intent = Intent(Intent.ACTION_SEND)
     intent.setType(mime)
     intent.putExtra(Intent.EXTRA_STREAM, cast("android.os.Parcelable", uri))
@@ -289,6 +295,7 @@ def _share_via_mediastore(path, mime, text):
     chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     activity.startActivity(chooser)
+    return "Salvo em Download/FinGestor/" + name
 
 
 def _share_via_provider(path, mime, text):
@@ -324,6 +331,7 @@ def _share_via_provider(path, mime, text):
     chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     activity.startActivity(chooser)
+    return "Compartilhado (FileProvider)"
 
 
 def _share_via_fromfile(path, mime, text):
@@ -347,17 +355,18 @@ def _share_via_fromfile(path, mime, text):
     chooser = Intent.createChooser(intent, title)
     chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     activity.startActivity(chooser)
+    return "Compartilhado (arquivo local)"
 
 
 def share_file(path, mime="application/pdf", text="Segue seu comprovante."):
-    """Abre o share sheet do Android. Tenta FileProvider e, se falhar,
-    usa file:// com StrictMode desativado. Retorna (True, '') ou
-    (False, mensagem_detalhada)."""
+    """Abre o share sheet do Android. Tenta, em ordem: MediaStore (Download),
+    FileProvider e file://. Retorna (True, info_de_sucesso) ou
+    (False, mensagem_detalhada_de_erro)."""
     errors = []
     for strategy in (_share_via_mediastore, _share_via_provider, _share_via_fromfile):
         try:
-            strategy(path, mime, text)
-            return True, ""
+            info = strategy(path, mime, text)
+            return True, (info or "Compartilhamento aberto")
         except Exception as e:
             import traceback
             traceback.print_exc()
