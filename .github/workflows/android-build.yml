@@ -48,9 +48,15 @@ jobs:
           if [ -f "$RECIPE" ]; then
             echo "Aplicando espelho do OpenSSL..."
             sed -i -E "s#https://www\.openssl\.org/source/openssl-(\{[a-z_]+\})\.tar\.gz#https://github.com/openssl/openssl/releases/download/openssl-\1/openssl-\1.tar.gz#g" "$RECIPE"
-            grep -n "releases/download/openssl" "$RECIPE" || echo "aviso: URL nao encontrada"
           fi
-          yes | buildozer android debug
+          n=0
+          until [ $n -ge 6 ]; do
+            yes | buildozer android debug && break
+            n=$((n+1))
+            echo "::warning::Tentativa $n falhou (provavel blip de download). Nova tentativa em 20s..."
+            sleep 20
+          done
+          ls -la bin/*.apk || { echo "::error::Nenhum APK gerado."; exit 1; }
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
