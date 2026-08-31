@@ -44,10 +44,14 @@ jobs:
         run: |
           export BUILDOZER_WARN_ON_ROOT=0
           yes | buildozer android debug || true
-          RECIPE=".buildozer/android/platform/python-for-android/pythonforandroid/recipes/openssl/__init__.py"
-          if [ -f "$RECIPE" ]; then
+          P4A=".buildozer/android/platform/python-for-android/pythonforandroid/recipes"
+          if [ -f "$P4A/openssl/__init__.py" ]; then
             echo "Aplicando espelho do OpenSSL..."
-            sed -i -E "s#https://www\.openssl\.org/source/openssl-(\{[a-z_]+\})\.tar\.gz#https://github.com/openssl/openssl/releases/download/openssl-\1/openssl-\1.tar.gz#g" "$RECIPE"
+            sed -i -E "s#https://www\.openssl\.org/source/openssl-(\{[a-z_]+\})\.tar\.gz#https://github.com/openssl/openssl/releases/download/openssl-\1/openssl-\1.tar.gz#g" "$P4A/openssl/__init__.py"
+          fi
+          if [ -f "$P4A/freetype/__init__.py" ]; then
+            echo "Aplicando espelho do FreeType..."
+            sed -i -E "s#https://download\.savannah\.gnu\.org/releases/freetype/freetype-(\{[a-z_]+\})\.tar\.gz#https://downloads.sourceforge.net/project/freetype/freetype2/\1/freetype-\1.tar.gz#g" "$P4A/freetype/__init__.py"
           fi
           n=0
           until [ $n -ge 6 ]; do
