@@ -246,6 +246,51 @@ def app_docs_dir(sub, fallback):
     return d
 
 
+def _share_via_mediastore(path, mime, text):
+    """Publica o arquivo no MediaStore (Download/FinGestor) e compartilha a
+    content:// URI. Funciona em Android 10+ (API 29) e e aceita pelo WhatsApp."""
+    from jnius import autoclass, cast
+    VERSION = autoclass("android.os.Build$VERSION")
+    if VERSION.SDK_INT < 29:
+        raise RuntimeError("MediaStore requer Android 10+")
+    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    Intent = autoclass("android.content.Intent")
+    ContentValues = autoclass("android.content.ContentValues")
+    MediaStore = autoclass("android.provider.MediaStore")
+    Downloads = autoclass("android.provider.MediaStore$Downloads")
+    String = autoclass("java.lang.String")
+
+    activity = PythonActivity.mActivity
+    resolver = activity.getContentResolver()
+    name = os.path.basename(path)
+
+    values = ContentValues()
+    values.put("_display_name", name)
+    values.put("mime_type", mime)
+    values.put("relative_path", "Download/FinGestor")
+    uri = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values)
+    if uri is None:
+        raise RuntimeError("MediaStore insert retornou nulo")
+
+    with open(path, "rb") as f:
+        data = f.read()
+    ostream = resolver.openOutputStream(uri)
+    ostream.write(data)
+    ostream.flush()
+    ostream.close()
+
+    intent = Intent(Intent.ACTION_SEND)
+    intent.setType(mime)
+    intent.putExtra(Intent.EXTRA_STREAM, cast("android.os.Parcelable", uri))
+    intent.putExtra(Intent.EXTRA_TEXT, cast("java.lang.CharSequence", String(text)))
+    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    title = cast("java.lang.CharSequence", String("Compartilhar"))
+    chooser = Intent.createChooser(intent, title)
+    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    activity.startActivity(chooser)
+
+
 def _share_via_provider(path, mime, text):
     from jnius import autoclass, cast
     PythonActivity = autoclass("org.kivy.android.PythonActivity")
@@ -309,7 +354,7 @@ def share_file(path, mime="application/pdf", text="Segue seu comprovante."):
     usa file:// com StrictMode desativado. Retorna (True, '') ou
     (False, mensagem_detalhada)."""
     errors = []
-    for strategy in (_share_via_provider, _share_via_fromfile):
+    for strategy in (_share_via_mediastore, _share_via_provider, _share_via_fromfile):
         try:
             strategy(path, mime, text)
             return True, ""
